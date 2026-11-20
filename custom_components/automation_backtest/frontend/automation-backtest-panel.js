@@ -274,7 +274,20 @@ class AutomationBacktestPanel extends HTMLElement {
     }
   }
 
-  set panel(_value) {}
+  set panel(value) {
+    // Fallback: if the frontend did not load the ⋮-menu script (cached page,
+    // companion app), load it from here. It guards against running twice.
+    try {
+      if (window.__automationBacktestMenu || document.querySelector("script[data-abt-menu]")) return;
+      const script = document.createElement("script");
+      script.type = "module";
+      script.dataset.abtMenu = "1";
+      script.src = `/automation_backtest_static/automation-backtest-menu.js?v=${encodeURIComponent(value?.config?.version || "")}`;
+      document.head.appendChild(script);
+    } catch (_e) {
+      /* the panel works without it */
+    }
+  }
 
   get _t() {
     const lang = (this._hass?.locale?.language || this._hass?.language || "en").slice(0, 2);
