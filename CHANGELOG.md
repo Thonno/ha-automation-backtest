@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- GitHub issue templates: unsupported trigger/condition/action, bug report, feature request.
+- CI workflow (`.github/workflows/validate.yml`): HACS validation, hassfest, pytest and `node --check` on the frontend.
+
 ## [1.2.0] - 2026-11-20
 
 ### Added
