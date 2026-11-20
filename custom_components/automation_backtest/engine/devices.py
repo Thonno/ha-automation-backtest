@@ -27,6 +27,10 @@ _DOMAIN_STATES = {
         "locked": "locked", "unlocked": "unlocked", "jammed": "jammed",
         "is_locked": "locked", "is_unlocked": "unlocked", "is_jammed": "jammed",
     },
+    "vacuum": {
+        "cleaning": "cleaning", "docked": "docked",
+        "is_cleaning": "cleaning", "is_docked": "docked",
+    },
     "media_player": {
         "playing": "playing", "paused": "paused", "idle": "idle",
         "is_playing": "playing", "is_paused": "paused", "is_idle": "idle",
@@ -85,6 +89,14 @@ def device_trigger_to_state(trigger: dict[str, Any]) -> dict[str, Any]:
             f"Device trigger '{domain}.{kind}' has no entity (event-based, not in state history)"
         )
 
+    if domain == "sensor":
+        # Every sensor device trigger (value, temperature, battery_level, …) is a
+        # threshold on the entity state.
+        if trigger.get("above") is None and trigger.get("below") is None:
+            return _copy(trigger, {"trigger": "state", "entity_id": entity_id, "to": None})
+        out = {"trigger": "numeric_state", "entity_id": entity_id}
+        return _copy(trigger, out, _PASSTHROUGH + ("above", "below"))
+
     attribute = _NUMERIC_TRIGGERS.get((domain, kind))
     if attribute is not None:
         if trigger.get("above") is None and trigger.get("below") is None:
@@ -118,6 +130,12 @@ def device_condition_to_state(cond: dict[str, Any]) -> dict[str, Any]:
     entity_id = cond.get("entity_id")
     if not entity_id:
         raise UnsupportedFeature(f"Device condition '{domain}.{kind}' has no entity")
+
+    if domain == "sensor":
+        if cond.get("above") is None and cond.get("below") is None:
+            raise UnsupportedFeature(f"Device condition 'sensor.{kind}' without above/below")
+        out = {"condition": "numeric_state", "entity_id": entity_id}
+        return _copy(cond, out, ("above", "below"))
 
     value_spec = _VALUE_CONDITIONS.get((domain, kind))
     if value_spec is not None:

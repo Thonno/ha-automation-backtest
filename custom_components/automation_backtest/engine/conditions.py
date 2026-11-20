@@ -254,7 +254,10 @@ def _trigger_condition(cond: dict, ctx: EvalContext):
 
 
 def _device_condition(cond: dict, ctx: EvalContext):
-    return _state_condition(device_condition_to_state(cond), ctx)
+    native = device_condition_to_state(cond)
+    if native["condition"] == "numeric_state":
+        return _numeric_state_condition(native, ctx)
+    return _state_condition(native, ctx)
 
 
 _HANDLERS = {

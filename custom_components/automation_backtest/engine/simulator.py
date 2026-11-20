@@ -19,7 +19,7 @@ UNCERTAIN = "uncertain"
 
 # Ordering for events that share a timestamp: timers and schedules first
 # (they represent time passing up to this instant), then state changes.
-_PRIO_TIMER, _PRIO_SCHEDULED, _PRIO_CHANGE = 0, 1, 2
+_PRIO_DOWNTIME, _PRIO_TIMER, _PRIO_SCHEDULED, _PRIO_CHANGE = -1, 0, 1, 2
 
 
 @dataclass
@@ -73,6 +73,7 @@ class BacktestResult:
     runs: list[Run] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     unsupported_triggers: list[dict[str, Any]] = field(default_factory=list)
+    downtime: list[tuple[datetime, datetime]] = field(default_factory=list)
 
     def count(self, status: str) -> int:
         return sum(1 for r in self.runs if r.status == status)
@@ -92,6 +93,10 @@ class BacktestResult:
             "summary": self.summary(),
             "warnings": list(self.warnings),
             "unsupported_triggers": list(self.unsupported_triggers),
+            "restarts": [
+                {"stopped": iso(a.astimezone(self.tz)), "started": iso(b.astimezone(self.tz))}
+                for a, b in self.downtime
+            ],
         }
         if include_runs:
             out["runs"] = [r.as_dict(self.tz) for r in runs]
@@ -112,14 +117,24 @@ def backtest(
     start: datetime,
     end: datetime,
     tz: tzinfo = timezone.utc,
+    downtime: list[tuple[datetime, datetime]] | None = None,
 ) -> BacktestResult:
-    """Replay `config` over [start, end] and report every would-be run."""
+    """Replay `config` over [start, end] and report every would-be run.
+
+    `downtime` lists (stopped, started) intervals in which Home Assistant was
+    not running automations (restarts). Like the real thing, triggers do not
+    fire then, pending `for:` timers are lost, and triggers re-attach to the
+    current states once HA has started again.
+    """
     if start.tzinfo is None or end.tzinfo is None:
         raise ValueError("start and end must be timezone-aware")
     if end <= start:
         raise ValueError("end must be after start")
 
-    result = BacktestResult(start=start, end=end, tz=tz)
+    windows = sorted(
+        (a, b) for a, b in (downtime or []) if b > start and a <= end and b > a
+    )
+    result = BacktestResult(start=start, end=end, tz=tz, downtime=windows)
     raw_triggers, conditions = normalize_automation(config)
     if not raw_triggers:
         result.warnings.append("Automation has no triggers")
@@ -189,15 +204,44 @@ def backtest(
                 f"Trigger {trig.index} ({trig.platform}) stopped at {iso(ctx.now.astimezone(tz))}: {err}"
             )
 
+    offline = False
+    for down, up in windows:
+        if down <= start < up:
+            offline = True
+        else:
+            push(down, _PRIO_DOWNTIME, ("down",))
+        if up <= end:
+            push(up, _PRIO_DOWNTIME, ("up",))
+
+    def rearm(trig: BaseTrigger) -> None:
+        if trig.index in disabled:
+            return
+        try:
+            trig.rearm(ctx)
+        except UnsupportedFeature as err:
+            disabled.add(trig.index)
+            result.warnings.append(f"Trigger {trig.index} ({trig.platform}) could not re-arm: {err}")
+
     while queue:
         when, _prio, _seq, payload = heapq.heappop(queue)
         ctx.now = when
         kind = payload[0]
-        if kind == "change":
+        if kind == "down":
+            offline = True
+            for trig in triggers:
+                trig.cancel_pending()
+        elif kind == "up":
+            offline = False
+            for trig in triggers:
+                rearm(trig)
+        elif kind == "change":
             change = payload[1]
             states.apply(change)
-            for trig in triggers:
-                safe(trig, trig.on_change, change, ctx)
+            if not offline:
+                for trig in triggers:
+                    safe(trig, trig.on_change, change, ctx)
+        elif offline:
+            continue  # time triggers and 'for:' timers do not run while HA is down
         elif kind == "scheduled":
             trig = payload[1]
             safe(trig, trig.on_scheduled, ctx)

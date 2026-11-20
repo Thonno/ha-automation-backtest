@@ -315,3 +315,99 @@ def test_humidity_device_trigger_numeric(make_history):
                             "type": "current_humidity_changed", "device_id": "x",
                             "entity_id": "humidifier.camera", "above": 60}]}
     assert statuses(backtest(config, history, START, END)) == [("03:00", EXECUTED)]
+
+
+# --- real-world gaps found on a live instance (2026-11-20) -------------------------------
+
+
+def test_sensor_value_device_trigger_and_condition(make_history):
+    history = make_history([
+        ("sensor.trv_valve", "2026-11-09 23:00", "10"),
+        ("timer.pausa", "2026-11-09 23:00", "idle"),
+        ("sensor.trv_valve", "2026-11-10 06:00", "40"),   # above 25, held 2 min -> 06:02
+        ("sensor.trv_valve", "2026-11-10 09:00", "5"),
+    ])
+    config = {
+        "triggers": [{"trigger": "device", "domain": "sensor", "type": "value", "device_id": "x",
+                      "entity_id": "sensor.trv_valve", "above": 25, "for": {"minutes": 2}}],
+        "conditions": [
+            {"condition": "state", "entity_id": "timer.pausa", "state": ["idle"]},
+            {"condition": "device", "domain": "sensor", "type": "is_value", "device_id": "x",
+             "entity_id": "sensor.trv_valve", "above": 30},
+        ],
+    }
+    assert statuses(backtest(config, history, START, END)) == [("06:02", EXECUTED)]
+
+
+def test_vacuum_is_docked_condition(make_history):
+    history = make_history([
+        ("binary_sensor.mission", "2026-11-09 23:00", "on"),
+        ("vacuum.bogdana", "2026-11-09 23:00", "cleaning"),
+        ("binary_sensor.mission", "2026-11-10 10:00", "off"),
+        ("vacuum.bogdana", "2026-11-10 10:00", "returning"),
+        ("vacuum.bogdana", "2026-11-10 10:00:20", "docked"),
+    ])
+    config = {
+        "triggers": [{"trigger": "device", "domain": "binary_sensor", "type": "not_running",
+                      "device_id": "x", "entity_id": "binary_sensor.mission", "for": {"seconds": 30}}],
+        "conditions": [{"condition": "device", "domain": "vacuum", "type": "is_docked",
+                        "device_id": "x", "entity_id": "vacuum.bogdana"}],
+    }
+    assert statuses(backtest(config, history, START, END)) == [("10:00", EXECUTED)]
+
+
+def test_restart_glitches_do_not_fire(make_history):
+    # TV goes off -> unknown -> off around a restart; real HA fires nothing.
+    history = make_history([
+        ("media_player.tv", "2026-11-09 23:00", "off"),
+        ("media_player.tv", "2026-11-10 11:32:22", "unknown"),
+        ("media_player.tv", "2026-11-10 11:32:33", "off"),
+        ("media_player.tv", "2026-11-10 14:25:02", "idle"),
+    ])
+    on = {"triggers": [{"trigger": "state", "entity_id": "media_player.tv", "from": "off"}]}
+    off = {"triggers": [{"trigger": "state", "entity_id": "media_player.tv", "to": "off"}]}
+    downtime = [(ts("2026-11-10 11:32:10"), ts("2026-11-10 11:32:40"))]
+    assert statuses(backtest(on, history, START, END)) == [("11:32", EXECUTED), ("14:25", EXECUTED)]
+    assert statuses(backtest(on, history, START, END, downtime=downtime)) == [("14:25", EXECUTED)]
+    assert backtest(off, history, START, END, downtime=downtime).runs == []
+
+
+def test_restart_cancels_pending_for_timer(make_history):
+    history = make_history([
+        ("binary_sensor.screen", "2026-11-09 23:00", "on"),
+        ("binary_sensor.screen", "2026-11-10 11:30:00", "off"),  # would fire at 11:40
+        ("binary_sensor.screen", "2026-11-10 16:33:51", "on"),
+        ("binary_sensor.screen", "2026-11-10 16:33:52", "off"),  # fires at 16:43:52
+    ])
+    config = {"triggers": [{"trigger": "state", "entity_id": "binary_sensor.screen", "to": "off",
+                            "for": "00:10:00"}]}
+    downtime = [(ts("2026-11-10 11:32:00"), ts("2026-11-10 11:33:00"))]
+    result = backtest(config, history, START, END, downtime=downtime)
+    assert [r.time.strftime("%H:%M:%S") for r in result.runs] == ["16:43:52"]
+    assert result.as_dict()["restarts"][0]["stopped"].startswith("2026-11-10T11:32")
+
+
+def test_numeric_state_rearms_after_restart(make_history):
+    history = make_history([
+        ("sensor.t", "2026-11-09 23:00", "10"),
+        ("sensor.t", "2026-11-10 10:00:10", "30"),  # crosses during downtime: lost
+        ("sensor.t", "2026-11-10 12:00", "31"),     # still above after restart: no fire
+        ("sensor.t", "2026-11-10 13:00", "10"),
+        ("sensor.t", "2026-11-10 14:00", "30"),     # crosses again: fires
+    ])
+    config = {"triggers": [{"trigger": "numeric_state", "entity_id": "sensor.t", "above": 25}]}
+    downtime = [(ts("2026-11-10 10:00"), ts("2026-11-10 10:01"))]
+    assert statuses(backtest(config, history, START, END, downtime=downtime)) == [("14:00", EXECUTED)]
+
+
+def test_windows_from_events():
+    from engine.downtime import START as S, STARTED as SD, STOP as SP, windows_from_events
+
+    events = [
+        (SP, ts("2026-11-10 11:32:10")), (S, ts("2026-11-10 11:32:20")), (SD, ts("2026-11-10 11:32:40")),
+        (S, ts("2026-11-11 03:00:00")), (SD, ts("2026-11-11 03:01:00")),  # crash: no stop
+    ]
+    assert windows_from_events(events) == [
+        (ts("2026-11-10 11:32:10"), ts("2026-11-10 11:32:40")),
+        (ts("2026-11-11 03:00:00"), ts("2026-11-11 03:01:00")),
+    ]

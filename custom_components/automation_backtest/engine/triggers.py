@@ -76,6 +76,19 @@ class BaseTrigger:
         self._token += 1
         return self._token
 
+    # Restart handling -------------------------------------------------------
+    def cancel_pending(self) -> None:
+        """HA stopped: pending 'for:' timers are lost (they are not restored)."""
+        pending = getattr(self, "_pending", None)
+        if isinstance(pending, dict):
+            pending.clear()
+        if hasattr(self, "_pending_token"):
+            self._pending_token = None
+
+    def rearm(self, ctx: EvalContext) -> None:
+        """HA started again: triggers attach fresh to the current states."""
+        return None
+
     # Hooks -----------------------------------------------------------------
     def on_start(self, ctx: EvalContext) -> None:  # pragma: no cover - default
         return None
@@ -226,6 +239,9 @@ class NumericStateTrigger(BaseTrigger):
         # Already matching at start => must leave the range before it can fire.
         for entity_id in self.entity_ids:
             self._armed[entity_id] = not self._match(entity_id, ctx)
+
+    def rearm(self, ctx: EvalContext) -> None:
+        self.on_start(ctx)
 
     def on_change(self, change: StateChange, ctx: EvalContext) -> TriggerOutput:
         out = TriggerOutput()
@@ -394,6 +410,9 @@ class TemplateTrigger(BaseTrigger):
 
     def on_start(self, ctx: EvalContext) -> None:
         self._last = self._eval(ctx)
+
+    def rearm(self, ctx: EvalContext) -> None:
+        self.on_start(ctx)
 
     def scheduled_times(self, start: datetime, end: datetime, tz: tzinfo) -> list[datetime]:
         if not self.uses_now:

@@ -39,6 +39,7 @@ from .const import (
     SERVICE_COMPARE,
 )
 from .engine import BacktestResult, HistoryStore, StateSnapshot, backtest, compare, extract_entities
+from .restarts import async_get_downtime
 
 _LOGGER = logging.getLogger(__name__)
 _REGISTRY_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -192,7 +193,15 @@ async def _run(
                     )
                 )
 
-    result = await hass.async_add_executor_job(backtest, config, store, start, end, tz)
+    downtime = await async_get_downtime(hass, start, end)
+    result = await hass.async_add_executor_job(
+        backtest, config, store, start, end, tz, downtime or []
+    )
+    if downtime is None:
+        result.warnings.append(
+            "Could not read Home Assistant restarts from the recorder: "
+            "runs around restarts may be over-counted"
+        )
     if missing:
         result.warnings.append(
             "No recorded history for: " + ", ".join(missing)
