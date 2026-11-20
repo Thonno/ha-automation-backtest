@@ -1,0 +1,30 @@
+name: Bug report
+description: Wrong result, error, or something in the panel not working.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: yaml
+    attributes:
+      label: Automation YAML (if relevant)
+      description: Remove anything private.
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Settings → System → Logs, filtered on automation_backtest. Browser console errors are useful for panel issues.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Home Assistant 2026.11.2, Automation Backtest 1.2.0, iOS app / Chrome …"
+    validations:
+      required: true
