@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from .conditions import EvalContext
 from .history import StateChange, StateSnapshot
+from .units import converter
 from .util import UnsupportedFeature, as_list, norm_state, parse_duration, to_float
 
 _DEAD = {"unavailable", "unknown"}
@@ -52,8 +53,10 @@ def _open_closed(snap: StateSnapshot | None) -> Any:
         return None
     if snap.domain == "binary_sensor":
         return {"on": "open", "off": "closed"}.get(snap.state, snap.state)
-    if snap.state in ("open", "opening"):
-        return "open"
+    if snap.domain == "cover" and isinstance(snap.attributes.get("is_closed"), bool):
+        return "closed" if snap.attributes["is_closed"] else "open"
+    if snap.state in ("open", "opening", "closing"):
+        return "open"  # HA: a cover is open until it is closed
     return snap.state
 
 
@@ -65,6 +68,10 @@ class Spec:
     value: Callable[[StateSnapshot | None], Any] = _state
     device_classes: tuple[str, ...] | None = None
     to_excluded: frozenset = frozenset()
+    dc_map: dict[str, tuple[str, ...] | None] | None = None  # per-domain device classes (conditions)
+    limit: Callable[[float, Any, bool], float | None] | None = None  # threshold value -> base unit
+    required_attr: dict[str, str] | None = None  # domain -> attribute the entity must have
+    primary_only: bool = True  # skip config/diagnostic entities of devices/areas
 
 
 def _enter(domains, states, value=_state, dc=None):
@@ -216,6 +223,12 @@ NOT_REPLAYABLE = {
 }
 
 # --------------------------------------------------------------------------- conditions
+#
+# Mirrors homeassistant/components/*/condition.py (HA 2026.11). Each condition is
+# a Spec: which entities it looks at (domain → device classes), how to read the
+# value (state or attribute, converted to the base unit) and what counts as valid.
+# Entities that are unavailable/unknown, or lack the attribute the condition
+# reads, are left out of the any/all check, as HA does.
 
 STATE_SETS: dict[str, dict[str, frozenset]] = {
     "vacuum": {s: frozenset([s]) for s in ("cleaning", "docked", "paused", "returning", "idle")}
@@ -233,52 +246,237 @@ STATE_SETS: dict[str, dict[str, frozenset]] = {
 }
 
 
+
+def _by_domain(sources: dict[str, Callable[[StateSnapshot | None], Any]]) -> Callable[[StateSnapshot | None], Any]:
+    def get(snap: StateSnapshot | None) -> Any:
+        if snap is None:
+            return None
+        source = sources.get(snap.domain)
+        return source(snap) if source else None
+
+    return get
+
+
+def _num_state_unit(valid_unit: str) -> Callable[[StateSnapshot | None], float | None]:
+    """Numeric state, only when the entity reports the unit HA requires."""
+
+    def get(snap: StateSnapshot | None) -> float | None:
+        if snap is None or snap.attributes.get("unit_of_measurement") != valid_unit:
+            return None
+        return to_float(snap.state)
+
+    return get
+
+
+def _converted(source, unit_of, convert) -> Callable[[StateSnapshot | None], float | None]:
+    def get(snap: StateSnapshot | None) -> float | None:
+        raw = source(snap)
+        if raw is None:
+            return None
+        value = convert(raw, unit_of(snap))
+        return None if value is None else round(value, 4)
+
+    return get
+
+
+def _uom(snap: StateSnapshot) -> Any:
+    return snap.attributes.get("unit_of_measurement")
+
+
+def _unit_attr(name: str) -> Callable[[StateSnapshot], Any]:
+    return lambda snap: snap.attributes.get(name)
+
+
+def _valid_unit_limit(valid_unit: str):
+    """Threshold entities must report the same unit (HA's _valid_unit)."""
+    return lambda value, unit, is_entity: value if not is_entity or unit == valid_unit else None
+
+
+def _convert_limit(convert):
+    return lambda value, unit, is_entity: convert(value, unit)
+
+
+def _state_cond(dc_map: dict[str, tuple[str, ...] | None], states, value=_state, required=None, primary_only=True) -> Spec:
+    return Spec(tuple(dc_map), "enter", frozenset(as_list(states)), value, dc_map=dc_map,
+                required_attr=required, primary_only=primary_only)
+
+
+def _not_state_cond(dc_map: dict[str, tuple[str, ...] | None], states, value=_state) -> Spec:
+    return Spec(tuple(dc_map), "leave", frozenset(as_list(states)), value, dc_map=dc_map)
+
+
+def _numeric_cond(dc_map, value, limit=None, required=None, primary_only=True) -> Spec:
+    return Spec(tuple(dc_map), "num_changed", value=value, dc_map=dc_map, limit=limit,
+                required_attr=required, primary_only=primary_only)
+
+
+def _dom(*domains: str, dc: str | tuple[str, ...] | None = None) -> dict[str, tuple[str, ...] | None]:
+    classes = None if dc is None else tuple(as_list(dc))
+    return {d: classes for d in domains}
+
+
+def _unit_numeric(dc_map, sources: dict[str, Any], units: dict[str, Any], kind: str, base: str | None, required=None) -> Spec:
+    convert = converter(kind, base)
+    value = _converted(_by_domain(sources), lambda snap: units[snap.domain](snap), convert)
+    return _numeric_cond(dc_map, value, _convert_limit(convert), required)
+
+
+def _sensor_numeric(dc: str, valid_unit: str | None = None, primary_only=True) -> Spec:
+    if valid_unit is None:
+        return _numeric_cond(_dom("sensor", dc=dc), _num_state, primary_only=primary_only)
+    return _numeric_cond(_dom("sensor", dc=dc), _num_state_unit(valid_unit), _valid_unit_limit(valid_unit),
+                         primary_only=primary_only)
+
+
+def _sensor_unit_numeric(dc: str, kind: str, base: str | None) -> Spec:
+    return _unit_numeric(_dom("sensor", dc=dc), {"sensor": _num_state}, {"sensor": _uom}, kind, base)
+
+
+def _binary(dc: str, on: bool, primary_only=True) -> Spec:
+    return _state_cond(_dom("binary_sensor", dc=dc), "on" if on else "off", primary_only=primary_only)
+
+
+_OPEN_CLOSED_DCS = {
+    "door": {"binary_sensor": ("door",), "cover": ("door",)},
+    "window": {"binary_sensor": ("window",), "cover": ("window",)},
+    "garage_door": {"binary_sensor": ("garage_door",), "cover": ("garage",)},
+    "gate": {"cover": ("gate",)},
+}
+
+CONDITIONS: dict[str, Spec] = {}
+
+for _d in ON_OFF + ("humidifier", "schedule"):
+    CONDITIONS[f"{_d}.is_on"] = _state_cond(_dom(_d), "on")
+    CONDITIONS[f"{_d}.is_off"] = _state_cond(_dom(_d), "off")
+CONDITIONS["climate.is_off"] = _state_cond(_dom("climate"), "off")
+CONDITIONS["climate.is_on"] = _state_cond(_dom("climate"), ("auto", "cool", "dry", "fan_only", "heat", "heat_cool"))
+CONDITIONS["water_heater.is_off"] = _state_cond(_dom("water_heater"), "off")
+CONDITIONS["water_heater.is_on"] = _not_state_cond(_dom("water_heater"), "off")
+for _what in ("heating", "cooling", "drying"):
+    CONDITIONS[f"climate.is_{_what}"] = _state_cond(_dom("climate"), _what, _attr("hvac_action"), {"climate": "hvac_action"})
+for _what in ("drying", "humidifying"):
+    CONDITIONS[f"humidifier.is_{_what}"] = _state_cond(_dom("humidifier"), _what, _attr("action"), {"humidifier": "action"})
+CONDITIONS["update.is_available"] = _state_cond(_dom("update"), "on")
+CONDITIONS["update.is_not_available"] = _state_cond(_dom("update"), "off")
+
+for _domain, _sets in STATE_SETS.items():
+    for _what, _states in _sets.items():
+        CONDITIONS.setdefault(f"{_domain}.is_{_what}", _state_cond(_dom(_domain), _states))
+
+# media player
+CONDITIONS["media_player.is_on"] = _not_state_cond(_dom("media_player"), "off")
+CONDITIONS["media_player.is_not_playing"] = _not_state_cond(_dom("media_player"), "playing")
+CONDITIONS["media_player.is_muted"] = _state_cond(_dom("media_player"), True, _attr("is_volume_muted"))
+CONDITIONS["media_player.is_unmuted"] = _state_cond(_dom("media_player"), False, _attr("is_volume_muted"))
+CONDITIONS["media_player.is_volume"] = _numeric_cond(_dom("media_player"), _num_attr("volume_level", 100))
+
+# doors, windows, covers
+for _kind, _dcs in _OPEN_CLOSED_DCS.items():
+    for _what in ("open", "closed"):
+        CONDITIONS[f"{_kind}.is_{_what}"] = _state_cond(_dcs, _what, _open_closed)
+for _kind in ("awning", "blind", "curtain", "shade", "shutter"):
+    for _what in ("open", "closed"):
+        CONDITIONS[f"cover.{_kind}_is_{_what}"] = _state_cond(_dom("cover", dc=_kind), _what, _open_closed)
+
+# binary sensors
+for _kind, _dc in {"motion": "motion", "occupancy": "occupancy", "moisture": "moisture",
+                   "vibration": "vibration", "illuminance": "light"}.items():
+    CONDITIONS[f"{_kind}.is_detected"] = _binary(_dc, True)
+    CONDITIONS[f"{_kind}.is_not_detected"] = _binary(_dc, False)
+    CONDITIONS[f"{_kind}.is_cleared"] = CONDITIONS[f"{_kind}.is_not_detected"]  # name used before 1.2.1
+for _gas, _dc in {"gas": "gas", "co": "carbon_monoxide", "smoke": "smoke"}.items():
+    CONDITIONS[f"air_quality.is_{_gas}_detected"] = _binary(_dc, True)
+    CONDITIONS[f"air_quality.is_{_gas}_cleared"] = _binary(_dc, False)
+
+# battery (HA also looks at diagnostic entities here)
+CONDITIONS["battery.is_low"] = _binary("battery", True, primary_only=False)
+CONDITIONS["battery.is_not_low"] = _binary("battery", False, primary_only=False)
+CONDITIONS["battery.is_charging"] = _binary("battery_charging", True, primary_only=False)
+CONDITIONS["battery.is_not_charging"] = _binary("battery_charging", False, primary_only=False)
+CONDITIONS["battery.is_level"] = _sensor_numeric("battery", "%", primary_only=False)
+
+# numeric values
+CONDITIONS["counter.is_value"] = _numeric_cond(_dom("counter"), _num_state)
+CONDITIONS["light.is_brightness"] = _numeric_cond(_dom("light"), _num_attr("brightness", 100 / 255))
+CONDITIONS["illuminance.is_value"] = _sensor_numeric("illuminance", "lx")
+CONDITIONS["moisture.is_value"] = _sensor_numeric("moisture", "%")
+CONDITIONS["power.is_value"] = _sensor_unit_numeric("power", "power", "W")
+CONDITIONS["climate.is_target_humidity"] = _numeric_cond(_dom("climate"), _num_attr("humidity"), required={"climate": "humidity"})
+CONDITIONS["humidifier.is_target_humidity"] = _numeric_cond(_dom("humidifier"), _num_attr("humidity"), required={"humidifier": "humidity"})
+CONDITIONS["humidity.is_value"] = _numeric_cond(
+    {"climate": None, "humidifier": None, "sensor": ("humidity",), "weather": None},
+    _by_domain({"climate": _num_attr("current_humidity"), "humidifier": _num_attr("current_humidity"),
+                "sensor": _num_state_unit("%"), "weather": _num_attr("humidity")}),
+    _valid_unit_limit("%"),
+    required={"climate": "current_humidity", "humidifier": "current_humidity", "weather": "humidity"},
+)
+CONDITIONS["temperature.is_value"] = _unit_numeric(
+    {"climate": None, "sensor": ("temperature",), "water_heater": None, "weather": None},
+    {"climate": _num_attr("current_temperature"), "sensor": _num_state,
+     "water_heater": _num_attr("current_temperature"), "weather": _num_attr("temperature")},
+    {"climate": _unit_attr("temperature_unit"), "sensor": _uom,
+     "water_heater": _unit_attr("temperature_unit"), "weather": _unit_attr("temperature_unit")},
+    "temperature", "°C",
+    required={"climate": "current_temperature", "water_heater": "current_temperature", "weather": "temperature"},
+)
+for _d in ("climate", "water_heater"):
+    CONDITIONS[f"{_d}.is_target_temperature"] = _unit_numeric(
+        _dom(_d), {_d: _num_attr("temperature")}, {_d: _unit_attr("temperature_unit")}, "temperature", "°C",
+        required={_d: "temperature"},
+    )
+for _q, (_dc, _kind, _base) in {
+    "co": ("carbon_monoxide", "co", "µg/m³"), "ozone": ("ozone", "ozone", "µg/m³"),
+    "voc": ("volatile_organic_compounds", "mass_volume", "µg/m³"),
+    "voc_ratio": ("volatile_organic_compounds_parts", "ratio", "ppb"),
+    "no": ("nitrogen_monoxide", "no", "µg/m³"), "no2": ("nitrogen_dioxide", "no2", "µg/m³"),
+    "so2": ("sulphur_dioxide", "so2", "µg/m³"), "radon": ("radon", "radon", "Bq/m³"),
+}.items():
+    CONDITIONS[f"air_quality.is_{_q}_value"] = _sensor_unit_numeric(_dc, _kind, _base)
+for _q, (_dc, _unit) in {
+    "co2": ("carbon_dioxide", "ppm"), "pm1": ("pm1", "µg/m³"), "pm25": ("pm25", "µg/m³"),
+    "pm4": ("pm4", "µg/m³"), "pm10": ("pm10", "µg/m³"), "n2o": ("nitrous_oxide", "µg/m³"),
+}.items():
+    CONDITIONS[f"air_quality.is_{_q}_value"] = _sensor_numeric(_dc, _unit)
+
+# conditions whose valid states come from the options
+_OPTION_CONDITIONS: dict[str, tuple[str, dict[str, Any], Callable, dict[str, str] | None]] = {
+    "select.is_option_selected": ("option", _dom("select", "input_select"), _state, None),
+    "climate.is_hvac_mode": ("hvac_mode", _dom("climate"), _state, None),
+    "water_heater.is_operation_mode": ("operation_mode", _dom("water_heater"), _state, None),
+    "humidifier.is_mode": ("mode", _dom("humidifier"), _attr("mode"), {"humidifier": "mode"}),
+    "text.is_equal_to": ("value", _dom("text", "input_text"), _state, None),
+    "media_player.is_current_source": ("source", _dom("media_player"), _attr("source"), {"media_player": "source"}),
+}
+
+UNSUPPORTED_CONDITIONS = {
+    "button.is_being_held": "needs the button's hold timing, which is not in state history",
+}
+
+
 def _condition_spec(name: str, cond: dict[str, Any]) -> Spec:
-    domain, _, what = name.partition(".")
-    if not what.startswith("is_"):
-        raise UnsupportedFeature(f"Condition '{name}' is not supported yet")
-    what = what[3:]
-    if domain == "media_player":
-        if what == "on":
-            return _leave("media_player", "off")
-        if what == "not_playing":
-            return _leave("media_player", "playing")
-        if what == "muted":
-            return _enter("media_player", True, _attr("is_volume_muted"))
-        if what == "unmuted":
-            return _enter("media_player", False, _attr("is_volume_muted"))
-        if what == "volume":
-            return _num("media_player", _num_attr("volume_level", 100), False)
-        if what == "current_source":
-            source = (cond.get("options") or {}).get("source")
-            if source is None:
-                raise UnsupportedFeature("media_player.is_current_source without a source option")
-            return _enter("media_player", as_list(source), _attr("source"))
-    if domain in ON_OFF + ("humidifier",) and what in ("on", "off"):
-        return _enter(domain, what)
-    if domain in ("climate", "water_heater") and what in ("on", "off"):
-        return _leave(domain, "off") if what == "on" else _enter(domain, "off")
-    if domain == "climate" and what in ("heating", "cooling", "drying"):
-        return _enter("climate", what, _attr("hvac_action"))
-    if domain in ("door", "window", "garage_door", "gate") and what in ("open", "closed"):
-        return Spec(("binary_sensor", "cover"), "enter", frozenset([what]), _open_closed,
-                    TRIGGERS[f"{domain}.opened"].device_classes)
-    if domain in ("motion", "occupancy", "moisture", "vibration") and what in ("detected", "cleared"):
-        return _enter("binary_sensor", "on" if what == "detected" else "off", dc=(domain,))
-    if domain in STATE_SETS and what in STATE_SETS[domain]:
-        return _enter(domain, STATE_SETS[domain][what])
+    if name in CONDITIONS:
+        return CONDITIONS[name]
+    if name in _OPTION_CONDITIONS:
+        key, dc_map, value, required = _OPTION_CONDITIONS[name]
+        wanted = (cond.get("options") or {}).get(key)
+        if wanted is None or wanted == []:
+            raise UnsupportedFeature(f"Condition '{name}' without the '{key}' option")
+        return _state_cond(dc_map, as_list(wanted), value, required)
+    if name in UNSUPPORTED_CONDITIONS:
+        raise UnsupportedFeature(f"Condition '{name}' {UNSUPPORTED_CONDITIONS[name]}")
     raise UnsupportedFeature(f"Condition '{name}' is not supported yet")
 
 
-def entity_filter(name: str, config: dict[str, Any] | None = None) -> tuple[tuple[str, ...], tuple[str, ...] | None] | None:
-    """(domains, device_classes) whose entities a target should be narrowed to."""
+def entity_filter(name: str, config: dict[str, Any] | None = None) -> tuple[dict[str, tuple[str, ...] | None], bool] | None:
+    """({domain: device classes or None}, primary_only) a target should be narrowed to."""
     spec = TRIGGERS.get(name)
     if spec is None:
         try:
             spec = _condition_spec(name, config or {})
         except UnsupportedFeature:
             return None
-    return spec.domains, spec.device_classes
+    allowed = dict(spec.dc_map) if spec.dc_map is not None else {d: spec.device_classes for d in spec.domains}
+    return allowed, spec.primary_only
 
 
 def is_purpose(name: Any) -> bool:
@@ -299,17 +497,23 @@ def _options(config: dict[str, Any]) -> dict[str, Any]:
     return config.get("options") or {}
 
 
-def _limit(spec: Any, ctx: EvalContext) -> float | None:
-    if isinstance(spec, dict):
-        if "number" in spec:
-            return to_float(spec["number"])
-        if "entity" in spec:
-            snap = ctx.states.get(spec["entity"])
-            return to_float(snap.state) if snap else None
-    return to_float(spec)
+def _limit(spec: Any, ctx: EvalContext, limit=None) -> float | None:
+    value, unit, is_entity = None, None, False
+    if isinstance(spec, dict) and "entity" in spec and "number" not in spec:
+        snap = ctx.states.get(spec["entity"])
+        is_entity = True
+        if snap is not None:
+            value, unit = to_float(snap.state), snap.attributes.get("unit_of_measurement")
+    elif isinstance(spec, dict):
+        value, unit = to_float(spec.get("number")), spec.get("unit_of_measurement")
+    else:
+        value = to_float(spec)
+    if value is None or limit is None:
+        return value
+    return limit(value, unit, is_entity)
 
 
-def threshold_match(value: float | None, threshold: dict[str, Any] | None, ctx: EvalContext) -> bool:
+def threshold_match(value: float | None, threshold: dict[str, Any] | None, ctx: EvalContext, limit=None) -> bool:
     if value is None:
         return False
     threshold = threshold or {"type": "any"}
@@ -317,11 +521,11 @@ def threshold_match(value: float | None, threshold: dict[str, Any] | None, ctx: 
     if kind == "any":
         return True
     if kind in ("above", "below"):
-        limit = _limit(threshold.get("value"), ctx)
+        limit = _limit(threshold.get("value"), ctx, limit)
         if limit is None:
             return False
         return value > limit if kind == "above" else value < limit
-    low, high = _limit(threshold.get("value_min"), ctx), _limit(threshold.get("value_max"), ctx)
+    low, high = _limit(threshold.get("value_min"), ctx, limit), _limit(threshold.get("value_max"), ctx, limit)
     if low is None or high is None:
         return False
     if kind == "between":
@@ -352,7 +556,7 @@ def _matches(spec: Spec, snap: StateSnapshot | None, ctx: EvalContext, threshold
     if spec.kind == "leave":
         return norm_state(value) not in {norm_state(s) for s in spec.states}
     if spec.kind in ("num_changed", "num_crossed"):
-        return threshold_match(value, threshold, ctx)
+        return threshold_match(value, threshold, ctx, spec.limit)
     return True
 
 
@@ -487,16 +691,22 @@ def evaluate_purpose_condition(cond: dict[str, Any], ctx: EvalContext) -> tuple[
     results, details = [], []
     for entity_id in entity_ids:
         snap = ctx.states.get(entity_id)
+        if snap is None or snap.state in _DEAD:
+            details.append(f"{entity_id}={snap.state if snap else 'no state'} (ignored)")
+            continue  # HA leaves unavailable/unknown entities out of any/all
+        required = (spec.required_attr or {}).get(snap.domain)
+        if required and snap.attributes.get(required) is None:
+            details.append(f"{entity_id} has no {required} (ignored)")
+            continue
         ok = _matches(spec, snap, ctx, threshold)
-        if ok and duration is not None and snap is not None and snap.last_changed is not None:
+        if ok and duration and snap.last_changed is not None:
             held = ctx.now - snap.last_changed
             if held < duration:
-                ok = False
                 details.append(f"{entity_id}={spec.value(snap)} only for {held}, needs {duration}")
                 results.append(False)
                 continue
         results.append(ok)
-        details.append(f"{entity_id}={spec.value(snap) if snap else 'no state'}")
+        details.append(f"{entity_id}={spec.value(snap)}")
     passed = all(results) if behavior == "all" else any(results)
     extra = f", {_describe_threshold(threshold)}" if spec.kind in ("num_changed", "num_crossed") else ""
     return passed, f"{', '.join(details)} ({behavior}{extra})"

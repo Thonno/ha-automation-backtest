@@ -642,3 +642,93 @@ def test_wanted_event_types():
     from engine import wanted_event_types
     config = {"triggers": [{"trigger": "event", "event_type": ["a", "b"]}, {"trigger": "homeassistant", "event": "start"}]}
     assert wanted_event_types(config) == {"a", "b", "homeassistant_stop", "homeassistant_started"}
+
+
+# --- purpose-specific conditions added in 1.2.1 (GitHub issues #1, #2) --------------------
+
+TIMES = {"triggers": [{"trigger": "time", "at": ["09:00:00", "11:00:00", "13:00:00"]}]}
+
+
+def test_select_is_option_selected(make_history):
+    history = make_history([
+        ("select.lademodus", "2026-11-09 23:00", "PV Charging"),
+        ("select.lademodus", "2026-11-10 10:00", "Instant Charging"),
+        ("select.lademodus", "2026-11-10 12:00", "Stop"),
+    ])
+    config = {**TIMES, "conditions": [{
+        "condition": "select.is_option_selected", "target": {"entity_id": "select.lademodus"},
+        "options": {"behavior": "any", "for": "00:00:00", "option": ["Instant Charging"]},
+    }]}
+    assert statuses(backtest(config, history, START, END)) == [("09:00", BLOCKED), ("11:00", EXECUTED), ("13:00", BLOCKED)]
+
+
+def test_battery_is_charging_and_for(make_history):
+    history = make_history([
+        ("binary_sensor.autoladestatus", "2026-11-09 23:00", "off", {"device_class": "battery_charging"}),
+        ("binary_sensor.autoladestatus", "2026-11-10 10:30", "on", {"device_class": "battery_charging"}),
+    ])
+    cond = {"condition": "battery.is_charging", "target": {"entity_id": "binary_sensor.autoladestatus"},
+            "options": {"behavior": "any", "for": "00:00:00"}}
+    assert statuses(backtest({**TIMES, "conditions": [cond]}, history, START, END)) == [
+        ("09:00", BLOCKED), ("11:00", EXECUTED), ("13:00", EXECUTED)]
+    held = {**cond, "options": {"behavior": "any", "for": "01:00:00"}}
+    assert statuses(backtest({**TIMES, "conditions": [held]}, history, START, END)) == [
+        ("09:00", BLOCKED), ("11:00", BLOCKED), ("13:00", EXECUTED)]
+
+
+def test_temperature_is_value_converts_units(make_history):
+    history = make_history([
+        ("sensor.out_f", "2026-11-09 23:00", "50", {"device_class": "temperature", "unit_of_measurement": "°F"}),
+        ("sensor.out_f", "2026-11-10 10:00", "77", {"device_class": "temperature", "unit_of_measurement": "°F"}),
+    ])
+    config = {**TIMES, "conditions": [{
+        "condition": "temperature.is_value", "_entities": ["sensor.out_f"],
+        "options": {"threshold": {"type": "above", "value": {"number": 20, "unit_of_measurement": "°C"}}},
+    }]}
+    assert statuses(backtest(config, history, START, END)) == [("09:00", BLOCKED), ("11:00", EXECUTED), ("13:00", EXECUTED)]
+
+
+def test_condition_all_ignores_unavailable_and_unit_mismatch(make_history):
+    history = make_history([
+        ("sensor.bat_a", "2026-11-09 23:00", "80", {"device_class": "battery", "unit_of_measurement": "%"}),
+        ("sensor.bat_b", "2026-11-09 23:00", "90", {"device_class": "battery", "unit_of_measurement": "%"}),
+        ("sensor.bat_b", "2026-11-10 10:00", "unavailable", {"device_class": "battery"}),
+        ("sensor.bat_a", "2026-11-10 12:00", "80", {"device_class": "battery", "unit_of_measurement": "V"}),
+    ])
+    config = {**TIMES, "conditions": [{
+        "condition": "battery.is_level", "_entities": ["sensor.bat_a", "sensor.bat_b"],
+        "options": {"behavior": "all", "threshold": {"type": "above", "value": {"number": 50}}},
+    }]}
+    # 11:00: bat_b unavailable is left out; 13:00: bat_a reports V, not % -> not valid
+    assert statuses(backtest(config, history, START, END)) == [("09:00", EXECUTED), ("11:00", EXECUTED), ("13:00", BLOCKED)]
+
+
+def test_cover_shutter_is_closed_uses_is_closed_attribute(make_history):
+    history = make_history([
+        ("cover.living", "2026-11-09 23:00", "closed", {"device_class": "shutter", "is_closed": True}),
+        ("cover.living", "2026-11-10 10:00", "opening", {"device_class": "shutter", "is_closed": False}),
+        ("cover.living", "2026-11-10 12:00", "closing", {"device_class": "shutter", "is_closed": False}),
+    ])
+    config = {**TIMES, "conditions": [{"condition": "cover.shutter_is_open", "_entities": ["cover.living"]}]}
+    assert statuses(backtest(config, history, START, END)) == [("09:00", BLOCKED), ("11:00", EXECUTED), ("13:00", EXECUTED)]
+
+
+def test_every_ha_condition_is_known():
+    from engine.purpose import NOT_REPLAYABLE, _condition_spec
+    from engine.util import UnsupportedFeature
+
+    options = {"option": ["a"], "hvac_mode": ["heat"], "mode": ["eco"], "value": "x", "operation_mode": ["eco"], "source": "TV"}
+    names = [
+        "air_quality.is_co_value", "air_quality.is_pm25_value", "air_quality.is_smoke_detected", "battery.is_low",
+        "battery.is_level", "climate.is_hvac_mode", "climate.is_target_temperature", "counter.is_value",
+        "cover.blind_is_open", "humidifier.is_mode", "humidity.is_value", "illuminance.is_value", "light.is_brightness",
+        "motion.is_not_detected", "power.is_value", "schedule.is_on", "text.is_equal_to", "update.is_available",
+        "water_heater.is_operation_mode", "gate.is_open", "select.is_option_selected", "battery.is_charging",
+    ]
+    for name in names:
+        assert name.split(".")[0] not in NOT_REPLAYABLE
+        _condition_spec(name, {"options": options})
+    try:
+        _condition_spec("button.is_being_held", {})
+    except UnsupportedFeature as err:
+        assert "hold timing" in str(err)

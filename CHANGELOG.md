@@ -5,9 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-20
+
 ### Added
+- **All purpose-specific conditions of Home Assistant 2026.11**, including `select.is_option_selected` ([#1](https://github.com/Thonno/ha-automation-backtest/issues/1)) and `battery.is_charging` ([#2](https://github.com/Thonno/ha-automation-backtest/issues/2)). Also new: `battery.*`, `text.is_equal_to`, `climate.is_hvac_mode` / `is_target_temperature` / `is_target_humidity`, `humidifier.*`, `water_heater.*`, `counter.is_value`, `light.is_brightness`, `temperature.is_value`, `humidity.is_value`, `power.is_value`, `illuminance.*`, `moisture.*`, `air_quality.*`, `cover.<type>_is_open/closed`, `schedule.*`, `update.*`. Only `button.is_being_held` stays unsupported (the hold timing is not in the history).
+- Numeric conditions convert units like Home Assistant does (°F/K → °C, kW → W, ppm ↔ µg/m³…) and ignore sensors that report a different unit than the one HA expects.
 - GitHub issue templates: unsupported trigger/condition/action, bug report, feature request.
 - CI workflow (`.github/workflows/validate.yml`): HACS validation, hassfest, pytest and `node --check` on the frontend.
+
+### Fixed
+- `motion`, `occupancy`, `moisture`, `vibration`, `illuminance`: the "not detected" conditions use HA's name `is_not_detected`.
+- Purpose-specific conditions leave unavailable/unknown entities out of the *any/all* check, as HA does (before they counted as "not matching").
+- `battery.*` conditions on a device or area also include its diagnostic entities, as HA does.
+- Covers count as open while opening or closing (HA's `is_closed` attribute is used when present).
 
 ## [1.2.0] - 2026-11-20
 
@@ -61,7 +71,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Restarts modelled: no runs while Home Assistant was down, pending `for:` timers dropped.
 - Actions `automation_backtest.run` and `automation_backtest.compare`.
 
-[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/Thonno/ha-automation-backtest/compare/v1.0.1...v1.0.2

@@ -188,7 +188,7 @@ def _as_set(value: Any) -> set[str]:
     return {v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str)}
 
 
-def target_entities(hass: HomeAssistant, target: dict[str, Any]) -> set[str]:
+def target_entities(hass: HomeAssistant, target: dict[str, Any], primary_only: bool = True) -> set[str]:
     """Entities behind a target (entity/device/area/floor/label), like HA does."""
     ent_reg, dev_reg, area_reg = er.async_get(hass), dr.async_get(hass), ar.async_get(hass)
     entities = {er.async_resolve_entity_id(ent_reg, e) or e for e in _as_set(target.get("entity_id"))}
@@ -205,7 +205,7 @@ def target_entities(hass: HomeAssistant, target: dict[str, Any]) -> set[str]:
 
     if devices or areas or labels:
         for entry in ent_reg.entities.values():
-            if entry.entity_category is not None or entry.hidden_by is not None:
+            if primary_only and (entry.entity_category is not None or entry.hidden_by is not None):
                 continue  # HA skips config/diagnostic and hidden entities for indirect targets
             device = dev_reg.async_get(entry.device_id) if entry.device_id else None
             in_area = entry.area_id in areas or (
@@ -229,13 +229,13 @@ def resolve_purpose_targets(hass: HomeAssistant, config: Any) -> Any:
 
     def resolve(node: dict[str, Any], name: str) -> dict[str, Any]:
         wanted = entity_filter(name, node)
-        found = target_entities(hass, node.get("target") or {})
-        if wanted is not None:
-            domains, device_classes = wanted
+        allowed, primary_only = wanted if wanted is not None else (None, True)
+        found = target_entities(hass, node.get("target") or {}, primary_only)
+        if allowed is not None:
             found = {
                 e for e in found
-                if e.split(".", 1)[0] in domains
-                and (device_classes is None or _device_class(hass, e) in device_classes)
+                if (domain := e.split(".", 1)[0]) in allowed
+                and (allowed[domain] is None or _device_class(hass, e) in allowed[domain])
             }
         return {**node, "_entities": sorted(found)}
 
