@@ -185,6 +185,10 @@ The response contains `summary` (triggered / executed / blocked / uncertain), a 
 
 `custom_components/automation_backtest/engine/` is a standalone, pure-Python, event-driven simulator (it only depends on `jinja2`) with its own test suite. The integration loads from the recorder the history of every entity the automation refers to, plus the events and restarts in the period, merges state changes, scheduled times, sun events and `for:` timers into one time-ordered queue, and evaluates triggers and conditions at the exact moment they would have been evaluated live.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
 ## Contributing
 
 Issues and pull requests are welcome, especially:
