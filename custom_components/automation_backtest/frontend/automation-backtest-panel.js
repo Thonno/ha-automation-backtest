@@ -10,7 +10,7 @@ const STR = {
     title: "Automation Backtest",
     subtitle: "Replay automations on your history",
     newDraft: "＋ New automation (draft)",
-    newHint: "Build the triggers and conditions of an automation you have not created yet: you will see when it would have run if it had existed.",
+    newHint: "Build an automation you have not created yet: you will see when it would have run, and what it would have done, if it had existed. Then save it or open it in the HA editor.",
     draftFromEditor: "Unsaved changes from the automation editor",
     compareNeedsSaved: "Compare needs a saved automation to use as version A.",
     automation: "Automation",
@@ -29,6 +29,17 @@ const STR = {
     yamlMode: "YAML",
     when: "When",
     andIf: "And if",
+    then: "Then do",
+    name: "Name",
+    namePh: "Name of the new automation",
+    nameRequired: "Give the automation a name first.",
+    save: "Save",
+    saveNew: "Save as new automation",
+    confirmOverwrite: "Confirm: overwrite the saved automation",
+    saving: "Saving…",
+    savedOk: "Saved.",
+    openSaved: "Open it in the HA editor",
+    openWithChanges: "Open in the HA editor with these changes",
     openInHa: "Open in the HA editor",
     createInHa: "Create in the HA editor",
     unsaved: "Unsaved draft",
@@ -90,7 +101,7 @@ const STR = {
     title: "Automation Backtest",
     subtitle: "Rigioca le automazioni sul tuo storico",
     newDraft: "＋ Nuova automazione (bozza)",
-    newHint: "Componi trigger e condizioni di un'automazione che non hai ancora creato: vedrai quando sarebbe partita se fosse esistita.",
+    newHint: "Componi un'automazione che non hai ancora creato: vedrai quando sarebbe partita e cosa avrebbe fatto se fosse esistita. Poi salvala o aprila nell'editor di HA.",
     draftFromEditor: "Modifiche non salvate dall'editor dell'automazione",
     compareNeedsSaved: "Il confronto richiede un'automazione salvata da usare come versione A.",
     automation: "Automazione",
@@ -109,6 +120,17 @@ const STR = {
     yamlMode: "YAML",
     when: "Quando",
     andIf: "E se",
+    then: "Allora fai",
+    name: "Nome",
+    namePh: "Nome della nuova automazione",
+    nameRequired: "Dai prima un nome all'automazione.",
+    save: "Salva",
+    saveNew: "Salva come nuova automazione",
+    confirmOverwrite: "Conferma: sovrascrivi l'automazione salvata",
+    saving: "Salvo…",
+    savedOk: "Salvata.",
+    openSaved: "Aprila nell'editor di HA",
+    openWithChanges: "Apri nell'editor di HA con queste modifiche",
     openInHa: "Apri nell'editor di HA",
     createInHa: "Crea nell'editor di HA",
     unsaved: "Bozza non salvata",
@@ -170,12 +192,15 @@ const STR = {
 
 const NEW = "__new__";
 const DRAFT_KEY = "automation_backtest_draft";
+const HANDOFF_KEY = "automation_backtest_to_editor";
 const TEMPLATE = `triggers:
   - trigger: state
     entity_id: binary_sensor.example
     to: "on"
 conditions: []
+actions: []
 `;
+const EMPTY = () => ({ triggers: [], conditions: [], actions: [] });
 const LOGO = `<svg viewBox="16 16 224 224" class="logo-ic" aria-hidden="true"><defs><linearGradient id="abt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f7ad4c"/><stop offset="1" stop-color="#e5762e"/></linearGradient></defs><rect x="16" y="16" width="224" height="224" rx="48" fill="url(#abt-g)"/><path d="M 75.6 91.3 A 64 64 0 1 1 66.2 144.6" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round"/><path d="M 60 114 L 97 98 L 62 72 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><rect x="98" y="132" width="14" height="30" rx="5" fill="#fff" opacity=".85"/><rect x="121" y="112" width="14" height="50" rx="5" fill="#fff" opacity=".85"/><rect x="144" y="96" width="14" height="66" rx="5" fill="#fff" opacity=".85"/><circle cx="176" cy="88" r="11" fill="#8a4513" stroke="#fff" stroke-width="5"/></svg>`;
 const MENU_PATH = "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z";
 const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
@@ -202,6 +227,7 @@ const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 const normalise = (cfg) => ({
   triggers: asList(cfg?.triggers ?? cfg?.trigger),
   conditions: asList(cfg?.conditions ?? cfg?.condition),
+  actions: asList(cfg?.actions ?? cfg?.action),
 });
 
 const esc = (v) =>
@@ -261,6 +287,7 @@ class AutomationBacktestPanel extends HTMLElement {
     if (this._vis) {
       this._vis.tr.hass = hass;
       this._vis.co.hass = hass;
+      this._vis.ac.hass = hass;
     }
     if (this._code && this._code.tagName !== "TEXTAREA") this._code.hass = hass;
     if (first) this._init();
@@ -296,6 +323,7 @@ class AutomationBacktestPanel extends HTMLElement {
     if (this._vis) {
       this._vis.tr.narrow = !!value;
       this._vis.co.narrow = !!value;
+      this._vis.ac.narrow = !!value;
     }
   }
 
@@ -486,8 +514,10 @@ class AutomationBacktestPanel extends HTMLElement {
     const isNew = s.automation === NEW;
     const cfgId = s.saved?.id;
     const haLink = isNew
-      ? `<a class="link" href="/config/automation/edit/new" target="_top">${esc(t.createInHa)} ↗</a>`
-      : cfgId ? `<a class="link" href="/config/automation/edit/${encodeURIComponent(cfgId)}" target="_top">${esc(t.openInHa)} ↗</a>` : "";
+      ? `<button class="flat to-editor">${esc(t.createInHa)} ↗</button>`
+      : !cfgId ? ""
+      : s.dirty ? `<button class="flat to-editor">${esc(t.openWithChanges)} ↗</button>`
+      : `<a class="link" href="/config/automation/edit/${encodeURIComponent(cfgId)}" target="_top">${esc(t.openInHa)} ↗</a>`;
     const open = isNew || forCompare || s.editing;
     let html = `<div class="card draft">`;
     if (forCompare) html += `<h3>${esc(t.versionB)}</h3>`;
@@ -508,9 +538,29 @@ class AutomationBacktestPanel extends HTMLElement {
         ${haLink}
       </div>
       ${s.visualOk === false && s.mode === "yaml" ? `<div class="banner info">${esc(t.visualUnavailable)}</div>` : ""}
-      <div class="ve-slot"><div class="empty">${esc(t.loadingEditor)}</div></div>`;
+      <div class="ve-slot"><div class="empty">${esc(t.loadingEditor)}</div></div>
+      ${forCompare ? "" : this._saveBar(isNew, cfgId)}`;
     }
     return html + `</div>`;
+  }
+
+  _saveBar(isNew, cfgId) {
+    const t = this._t;
+    const s = this._s;
+    if (!isNew && (!cfgId || !s.dirty) && !s.saveMsg) return "";
+    const msg = s.saveMsg
+      ? s.saveMsg.ok
+        ? `<span class="save-ok">✓ ${esc(t.savedOk)} <a class="link" href="/config/automation/edit/${encodeURIComponent(s.saveMsg.id)}" target="_top">${esc(t.openSaved)} ↗</a></span>`
+        : `<span class="save-err">${esc(s.saveMsg.err)}</span>`
+      : "";
+    const name = isNew
+      ? `<input class="alias" type="text" placeholder="${esc(t.namePh)}" aria-label="${esc(t.name)}" value="${esc(s.alias || "")}">`
+      : "";
+    const label = s.saving ? t.saving : isNew ? t.saveNew : s.confirmSave ? t.confirmOverwrite : t.save;
+    const btn = isNew || s.dirty
+      ? `<button class="save-draft${s.confirmSave ? " danger" : ""}"${s.saving ? " disabled" : ""}>${esc(label)}</button>`
+      : "";
+    return `<div class="save-bar">${name}${btn}${msg}</div>`;
   }
 
   _runTab() {
@@ -1116,6 +1166,10 @@ ${this._chartBar()}
     } else if (el.classList.contains("more")) {
       s.listLimit += LIST_PAGE;
       this._renderBody();
+    } else if (el.classList.contains("save-draft")) {
+      this._saveDraft();
+    } else if (el.classList.contains("to-editor")) {
+      this._openInEditor();
     } else if (el.dataset.actview) {
       s.actView = el.dataset.actview;
       this._renderBody();
@@ -1172,6 +1226,10 @@ ${this._chartBar()}
       s.dirty = false;
       s.fromEditor = false;
       s.error = "";
+      s.alias = "";
+      s.newId = null;
+      s.saveMsg = null;
+      s.confirmSave = false;
       const url = new URL(window.location.href);
       url.searchParams.delete("draft");
       if (s.automation && s.automation !== NEW) url.searchParams.set("automation", s.automation);
@@ -1179,7 +1237,7 @@ ${this._chartBar()}
       window.history.replaceState(window.history.state, "", url);
       if (s.automation === NEW) {
         s.editing = true;
-        s.draft = { triggers: [], conditions: [] };
+        s.draft = EMPTY();
         s.yaml = TEMPLATE;
         if (s.tab === "compare") s.tab = "run";
       }
@@ -1189,6 +1247,8 @@ ${this._chartBar()}
       s.start = el.value;
     } else if (el.classList.contains("end")) {
       s.end = el.value;
+    } else if (el.classList.contains("alias")) {
+      s.alias = el.value;
     } else if (el.classList.contains("draft-toggle")) {
       s.editing = el.checked;
       this._renderBody();
@@ -1236,7 +1296,7 @@ ${this._chartBar()}
         s.fromEditor = changed && !!automation;
       } else if (!automation) {
         s.editing = true;
-        s.draft = { triggers: [], conditions: [] };
+        s.draft = EMPTY();
         s.yaml = TEMPLATE;
       }
     } catch (err) {
@@ -1269,22 +1329,130 @@ ${this._chartBar()}
     if (this._vis) {
       this._vis.tr.triggers = s.draft.triggers;
       this._vis.co.conditions = s.draft.conditions;
+      this._vis.ac.actions = s.draft.actions || [];
     }
     if (this._code) this._code.value = s.yaml;
   }
 
   _markDirty() {
     const s = this._s;
+    const first = !s.dirty;
     s.dirty = true;
+    const stale = s.confirmSave || !!s.saveMsg;
+    s.confirmSave = false;
+    s.saveMsg = null;
+    if ((first && s.automation !== NEW) || stale) {
+      this._refreshDraftBar();
+      return;
+    }
     const badge = this.shadowRoot.querySelector(".dirty-badge");
     if (badge && s.automation !== NEW) badge.hidden = false;
+  }
+
+  /** Re-render the draft bar and save bar without touching the mounted editor. */
+  _refreshDraftBar() {
+    const s = this._s;
+    const card = this.shadowRoot.querySelector(".card.draft");
+    if (!card) return;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = this._draftEditor(false);
+    const fresh = tmp.firstElementChild;
+    const oldBar = card.querySelector(".draft-bar");
+    const newBar = fresh?.querySelector(".draft-bar");
+    if (oldBar && newBar) oldBar.replaceWith(newBar);
+    card.querySelector(".save-bar")?.remove();
+    const save = fresh?.querySelector(".save-bar");
+    if (save) card.append(save);
+    const badge = card.querySelector(".dirty-badge");
+    if (badge) badge.hidden = !(s.dirty && s.automation !== NEW);
+  }
+
+  /** The draft as triggers/conditions/actions objects (YAML mode parsed server-side). */
+  async _draftObject() {
+    const s = this._s;
+    if (s.mode === "yaml") return normalise((await this._ws({ type: "automation_backtest/from_yaml", yaml: s.yaml })).config);
+    return normalise(s.draft || EMPTY());
+  }
+
+  _navigate(url) {
+    window.history.pushState(null, "", url);
+    window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+  }
+
+  async _saveDraft() {
+    const s = this._s;
+    const t = this._t;
+    const isNew = s.automation === NEW;
+    const alias = (this.shadowRoot.querySelector(".alias")?.value ?? s.alias ?? "").trim();
+    if (isNew) s.alias = alias;
+    if (isNew && !alias) {
+      s.saveMsg = { ok: false, err: t.nameRequired };
+      this._refreshDraftBar();
+      return;
+    }
+    if (!isNew && !s.confirmSave) {
+      s.confirmSave = true;
+      this._refreshDraftBar();
+      return;
+    }
+    s.saving = true;
+    this._refreshDraftBar();
+    try {
+      const draft = await this._draftObject();
+      let id;
+      let body;
+      if (isNew) {
+        id = s.newId || String(Date.now()); // saving again updates the one just created
+        body = { alias, description: "", mode: "single", ...draft };
+      } else {
+        id = s.saved?.id;
+        if (!id) throw new Error("This automation has no id (YAML-only?): it cannot be saved from here.");
+        const full = await this._hass.callApi("GET", `config/automation/config/${encodeURIComponent(id)}`);
+        body = { ...full, ...draft };
+        delete body.trigger;
+        delete body.condition;
+        delete body.action;
+      }
+      await this._hass.callApi("POST", `config/automation/config/${encodeURIComponent(id)}`, body);
+      s.saveMsg = { ok: true, id };
+      s.confirmSave = false;
+      if (isNew) s.newId = id;
+      if (!isNew) {
+        s.dirty = false;
+        s.fromEditor = false;
+        s.saving = false;
+        await this._loadSaved();
+        return;
+      }
+    } catch (err) {
+      s.saveMsg = { ok: false, err: err?.body?.message || err?.message || String(err) };
+    }
+    s.saving = false;
+    this._refreshDraftBar();
+  }
+
+  /** Open HA's automation editor pre-filled with the draft (the menu script fills it in). */
+  async _openInEditor() {
+    const s = this._s;
+    const isNew = s.automation === NEW;
+    try {
+      const draft = await this._draftObject();
+      const alias = (this.shadowRoot.querySelector(".alias")?.value ?? s.alias ?? "").trim();
+      const config = isNew ? { ...(alias ? { alias } : {}), description: "", mode: "single", ...draft } : draft;
+      const target = isNew ? s.newId || "new" : s.saved?.id; // already saved from here: open that one
+      window.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify({ target, config, at: Date.now() }));
+      this._navigate(`/config/automation/edit/${target === "new" ? "new" : encodeURIComponent(target)}`);
+    } catch (err) {
+      s.error = err?.message || String(err);
+      this._renderBody();
+    }
   }
 
   /** What the backend should replay as "the draft". */
   _draftPayload(objKey, yamlKey) {
     const s = this._s;
     if (s.mode === "yaml") return { [yamlKey]: s.yaml };
-    return { [objKey]: s.draft || { triggers: [], conditions: [] } };
+    return { [objKey]: s.draft || EMPTY() };
   }
 
   async _switchMode(mode) {
@@ -1300,6 +1468,7 @@ ${this._chartBar()}
         if (this._vis) {
           this._vis.tr.triggers = s.draft.triggers;
           this._vis.co.conditions = s.draft.conditions;
+          this._vis.ac.actions = s.draft.actions || [];
         }
       }
       s.mode = mode;
@@ -1315,7 +1484,7 @@ ${this._chartBar()}
   async _ensureVisual() {
     if (this._visualPromise) return this._visualPromise;
     this._visualPromise = (async () => {
-      const ready = () => customElements.get("ha-automation-trigger") && customElements.get("ha-automation-condition");
+      const ready = () => customElements.get("ha-automation-trigger") && customElements.get("ha-automation-condition") && customElements.get("ha-automation-action");
       try {
         if (!ready()) {
           // Ask HA to load Settings → Automations (without opening it): it defines the editor blocks.
@@ -1324,7 +1493,7 @@ ${this._chartBar()}
           const cfgPanel = document.createElement("ha-panel-config");
           await cfgPanel.routerOptions?.routes?.automation?.load?.();
           await Promise.race([
-            Promise.all([customElements.whenDefined("ha-automation-trigger"), customElements.whenDefined("ha-automation-condition")]),
+            Promise.all(["ha-automation-trigger", "ha-automation-condition", "ha-automation-action"].map((n) => customElements.whenDefined(n))),
             new Promise((r) => setTimeout(r, 8000)),
           ]);
         }
@@ -1346,9 +1515,12 @@ ${this._chartBar()}
     h1.textContent = t.when;
     const h2 = document.createElement("h4");
     h2.textContent = t.andIf;
+    const h3 = document.createElement("h4");
+    h3.textContent = t.then;
     const tr = document.createElement("ha-automation-trigger");
     const co = document.createElement("ha-automation-condition");
-    for (const el of [tr, co]) {
+    const ac = document.createElement("ha-automation-action");
+    for (const el of [tr, co, ac]) {
       el.hass = this._hass;
       el.narrow = !!this._narrow;
     }
@@ -1364,8 +1536,14 @@ ${this._chartBar()}
       co.conditions = e.detail.value;
       this._markDirty();
     });
-    wrap.append(h1, tr, h2, co);
-    this._vis = { wrap, tr, co };
+    ac.addEventListener("value-changed", (e) => {
+      e.stopPropagation();
+      this._s.draft = { ...(this._s.draft || {}), actions: e.detail.value };
+      ac.actions = e.detail.value;
+      this._markDirty();
+    });
+    wrap.append(h1, tr, h2, co, h3, ac);
+    this._vis = { wrap, tr, co, ac };
     return this._vis;
   }
 
@@ -1411,9 +1589,10 @@ ${this._chartBar()}
         return;
       }
       const vis = this._buildVisual();
-      const draft = s.draft || { triggers: [], conditions: [] };
+      const draft = s.draft || EMPTY();
       if (vis.tr.triggers !== draft.triggers) vis.tr.triggers = draft.triggers;
       if (vis.co.conditions !== draft.conditions) vis.co.conditions = draft.conditions;
+      if (vis.ac.actions !== (draft.actions || [])) vis.ac.actions = draft.actions || [];
       const current = this.shadowRoot.querySelector(".ve-slot");
       if (current) current.replaceChildren(vis.wrap);
     } else {
@@ -1590,6 +1769,14 @@ button.flat{background:none;border:0;color:var(--acct);font:inherit;font-weight:
 .draft h3{margin:0 0 8px;font-size:15px}
 .draft-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 8px}
 .draft-bar .grow{flex:1}
+.save-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:var(--bd)}
+.save-bar .alias{flex:1 1 220px;min-width:0;padding:9px 12px;border-radius:12px;border:var(--bd);background:var(--tile);color:var(--fg);font:inherit}
+.save-draft{border:0;border-radius:12px;padding:9px 16px;font:inherit;font-weight:700;cursor:pointer;background:var(--acc);color:#1b1b1b}
+.save-draft.danger{background:#e5534b;color:#fff}
+.save-draft[disabled]{opacity:.6;cursor:default}
+.save-ok{font-size:13px;color:#4caf50;font-weight:600}
+.save-err{font-size:13px;color:#e5534b;font-weight:600}
+button.flat.to-editor{color:var(--acct);font-weight:600}
 .draft-bar .badge{margin:0}
 .seg.small{padding:3px;border-radius:13px}
 .seg.small button{padding:5px 12px;font-size:12px;border-radius:10px}

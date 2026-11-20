@@ -43,7 +43,7 @@ def raw_automation_config(hass: HomeAssistant, entity_id: str) -> dict[str, Any]
 
 
 def editable_part(config: dict[str, Any]) -> dict[str, list]:
-    """Just triggers and conditions, normalised to the plural keys."""
+    """Triggers, conditions and actions, normalised to the plural keys."""
     def as_list(value: Any) -> list:
         if value is None:
             return []
@@ -52,6 +52,7 @@ def editable_part(config: dict[str, Any]) -> dict[str, list]:
     return {
         "triggers": as_list(config.get("triggers", config.get("trigger"))),
         "conditions": as_list(config.get("conditions", config.get("condition"))),
+        "actions": as_list(config.get("actions", config.get("action"))),
     }
 
 

@@ -16,6 +16,7 @@
 
   const VALUE = "automation_backtest";
   const DRAFT_KEY = "automation_backtest_draft";
+  const HANDOFF_KEY = "automation_backtest_to_editor";
   const PANEL = "/automation-backtest";
   // mdi:history
   const ICON = "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3";
@@ -135,6 +136,34 @@
     }
   }
 
+  /** A draft sent from the Backtest panel: put it into the editor (unsaved). */
+  function applyHandoff(editor) {
+    let handoff = null;
+    try {
+      handoff = JSON.parse(window.sessionStorage.getItem(HANDOFF_KEY) || "null");
+    } catch (_e) {
+      return;
+    }
+    if (!handoff) return;
+    const drop = () => window.sessionStorage.removeItem(HANDOFF_KEY);
+    if (Date.now() - (handoff.at || 0) > 60000) return drop();
+    const id = editor.automationId;
+    if (handoff.target === "new" ? id : String(id) !== String(handoff.target)) return;
+    const current = editor.config ?? editor._config;
+    if (!current) return; // editor still loading: next tick
+    const merged = { ...current, ...handoff.config };
+    for (const key of ["trigger", "condition", "action"]) delete merged[key];
+    drop();
+    if (typeof editor._updateConfig === "function") {
+      editor._updateConfig(merged); // HA's own path: undo history + unsaved-changes state
+    } else {
+      if ("config" in editor) editor.config = merged;
+      if ("_config" in editor) editor._config = merged;
+      for (const key of ["dirty", "_dirty"]) if (key in editor) editor[key] = true;
+    }
+    editor.requestUpdate?.();
+  }
+
   function tick() {
     try {
       if (!window.location.pathname.startsWith("/config/automation")) return;
@@ -142,7 +171,10 @@
       const picker = find(hassEl()?.shadowRoot, "ha-automation-picker");
       if (picker) patchPicker(picker);
       const editor = find(hassEl()?.shadowRoot, "ha-automation-editor");
-      if (editor) patchEditor(editor);
+      if (editor) {
+        applyHandoff(editor);
+        patchEditor(editor);
+      }
     } catch (_e) {
       /* never break the HA frontend */
     }
@@ -151,5 +183,13 @@
   window.addEventListener("location-changed", () => setTimeout(tick, 300));
   window.addEventListener("popstate", () => setTimeout(tick, 300));
   setInterval(tick, 1500);
+  // faster while a draft is waiting for the editor
+  setInterval(() => {
+    try {
+      if (window.sessionStorage.getItem(HANDOFF_KEY)) tick();
+    } catch (_e) {
+      /* ignore */
+    }
+  }, 250);
   tick();
 })();

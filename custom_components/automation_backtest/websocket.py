@@ -35,7 +35,7 @@ from .const import (
 from .engine import compare, extract_entities, extract_thresholds
 
 _REGISTERED = f"{DOMAIN}_ws_registered"
-_EDITABLE_KEYS = ("triggers", "trigger", "conditions", "condition")
+_EDITABLE_KEYS = ("triggers", "trigger", "conditions", "condition", "actions", "action")
 
 _PERIOD = {
     vol.Optional("start"): str,
@@ -99,14 +99,18 @@ async def _source_config(
 
 
 def _with_saved_actions(hass: HomeAssistant, config: dict[str, Any], entity_id: str | None) -> dict[str, Any]:
-    """A draft only carries triggers/conditions: borrow actions + mode from the saved automation."""
-    if not entity_id or "actions" in config or "action" in config:
+    """Fill what a draft does not carry from the saved automation: mode always, actions if absent."""
+    if not entity_id:
+        return config
+    has_actions = "actions" in config or "action" in config
+    if has_actions and "mode" in config:
         return config
     try:
         saved = runner.resolve_registry_ids(hass, runner.raw_automation_config(hass, entity_id))
     except HomeAssistantError:
         return config
-    extra = {k: saved[k] for k in ("actions", "action", "mode") if k in saved}
+    keys = ("mode",) if has_actions else ("actions", "action", "mode")
+    extra = {k: saved[k] for k in keys if k in saved and k not in config}
     return {**config, **extra}
 
 
