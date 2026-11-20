@@ -192,7 +192,7 @@ def test_unsupported_condition_is_uncertain_not_wrong(make_history):
     ])
     config = {
         "triggers": [{"trigger": "state", "entity_id": "binary_sensor.m", "to": "on"}],
-        "conditions": [{"condition": "sun", "after": "sunset"}],
+        "conditions": [{"condition": "zone", "entity_id": "person.a", "zone": "zone.home"}],
     }
     result = backtest(config, history, START, END)
     assert statuses(result) == [("08:00", UNCERTAIN)]
@@ -227,10 +227,10 @@ def test_device_trigger_translated(make_history):
 
 def test_unsupported_trigger_reported(make_history):
     history = make_history([("sun.sun", "2026-11-09 00:00", "x")])
-    config = {"triggers": [{"trigger": "event", "event_type": "foo"}]}
+    config = {"triggers": [{"trigger": "geo_location", "source": "x", "zone": "zone.home"}]}
     result = backtest(config, history, START, END)
     assert result.runs == []
-    assert result.unsupported_triggers[0]["platform"] == "event"
+    assert result.unsupported_triggers[0]["platform"] == "geo_location"
 
 
 # --- compare / references ------------------------------------------------------------
@@ -518,7 +518,7 @@ def test_door_opened_on_binary_sensor_and_unsupported_sun(make_history):
     assert statuses(backtest(door, history, START, END)) == [("07:00", EXECUTED)]
     sun = {"triggers": [{"trigger": "sun.sunset", "target": {}}]}
     result = backtest(sun, history, START, END)
-    assert result.runs == [] and "sun position" in result.unsupported_triggers[0]["reason"]
+    assert result.runs == [] and "home location" in result.unsupported_triggers[0]["reason"]
 
 
 def test_media_player_is_volume_condition(make_history):
@@ -532,3 +532,113 @@ def test_media_player_is_volume_condition(make_history):
                         "options": {"threshold": {"type": "below", "value": {"number": 35}}}}],
     }
     assert statuses(backtest(config, history, START, END)) == [("10:00", BLOCKED), ("13:00", EXECUTED)]
+
+
+# --- sun ---------------------------------------------------------------------
+
+from engine.sun import noaa_provider  # noqa: E402
+from engine.triggers import RecordedEvent  # noqa: E402
+
+ROME = ZoneInfo("Europe/Rome")
+ROME_SUN = noaa_provider(41.9, 12.5, ROME)
+
+
+def test_noaa_matches_known_rome_times():
+    from datetime import date
+    sunrise = ROME_SUN("sunrise", date(2026, 11, 10)).astimezone(ROME)
+    sunset = ROME_SUN("sunset", date(2026, 11, 10)).astimezone(ROME)
+    assert (sunrise.hour, sunrise.minute // 10) == (6, 5)   # ~06:55
+    assert (sunset.hour, sunset.minute // 10) == (16, 5)    # ~16:5x
+
+
+def test_sun_trigger_with_offset(make_history):
+    config = {"triggers": [{"trigger": "sun", "event": "sunset", "offset": "-00:30:00"}]}
+    result = backtest(config, make_history([]), START, END, ROME, sun=ROME_SUN)
+    assert len(result.runs) == 1
+    local = result.runs[0].time.astimezone(ROME)
+    assert local.hour == 16 and 15 <= local.minute <= 35
+
+
+def test_purpose_sun_sunset_trigger(make_history):
+    config = {"triggers": [{"trigger": "sun.sunset", "options": {"offset": {"minutes": 15}}}]}
+    result = backtest(config, make_history([]), START, END, ROME, sun=ROME_SUN)
+    assert len(result.runs) == 1 and result.runs[0].time.astimezone(ROME).hour == 17
+
+
+def test_sun_trigger_without_location_is_reported(make_history):
+    config = {"triggers": [{"trigger": "sun", "event": "sunrise"}]}
+    result = backtest(config, make_history([]), START, END)
+    assert result.runs == [] and result.unsupported_triggers
+
+
+def test_sun_condition_after_sunset(make_history):
+    config = {
+        "triggers": [{"trigger": "time", "at": ["12:00", "20:00"]}],
+        "conditions": [{"condition": "sun", "after": "sunset", "after_offset": "-01:00:00"}],
+    }
+    result = backtest(config, make_history([]), START, END, ROME, sun=ROME_SUN)
+    assert [r.status for r in result.runs] == [BLOCKED, EXECUTED]
+
+
+def test_sun_condition_night_window(make_history):
+    config = {
+        "triggers": [{"trigger": "time", "at": ["03:00", "12:00", "22:00"]}],
+        "conditions": [{"condition": "sun", "after": "sunset", "before": "sunrise"}],
+    }
+    result = backtest(config, make_history([]), START, END, ROME, sun=ROME_SUN)
+    assert [r.status for r in result.runs] == [EXECUTED, BLOCKED, EXECUTED]
+
+
+# --- events ------------------------------------------------------------------
+
+
+def ev(when, etype, data=None):
+    return RecordedEvent(ts(when), etype, data or {})
+
+
+def test_event_trigger_matches_data_subset(make_history):
+    events = [
+        ev("2026-11-10 08:00", "zha_event", {"device_ieee": "aa", "command": "on", "args": []}),
+        ev("2026-11-10 09:00", "zha_event", {"device_ieee": "aa", "command": "off"}),
+        ev("2026-11-10 10:00", "other_event", {"command": "on"}),
+    ]
+    config = {
+        "triggers": [{"trigger": "event", "event_type": "zha_event", "event_data": {"command": "on"}}],
+        "conditions": [{"condition": "template", "value_template": "{{ trigger.event.data.device_ieee == 'aa' }}"}],
+    }
+    result = backtest(config, make_history([]), START, END, events=events)
+    assert statuses(result) == [("08:00", EXECUTED)]
+
+
+def test_event_trigger_with_template_is_unsupported(make_history):
+    config = {"triggers": [{"trigger": "event", "event_type": "{{ 'x' }}"}]}
+    assert backtest(config, make_history([]), START, END).unsupported_triggers
+
+
+def test_tag_trigger(make_history):
+    events = [ev("2026-11-10 08:00", "tag_scanned", {"tag_id": "A1", "device_id": "phone"}),
+              ev("2026-11-10 09:00", "tag_scanned", {"tag_id": "B2", "device_id": "phone"})]
+    config = {"triggers": [{"trigger": "tag", "tag_id": "A1"}]}
+    assert statuses(backtest(config, make_history([]), START, END, events=events)) == [("08:00", EXECUTED)]
+
+
+def test_homeassistant_start_and_shutdown(make_history):
+    down, up = ts("2026-11-10 03:00"), ts("2026-11-10 03:02")
+    events = [ev("2026-11-10 03:00", "homeassistant_stop"), ev("2026-11-10 03:02", "homeassistant_started")]
+    start = {"triggers": [{"trigger": "homeassistant", "event": "start"}]}
+    stop = {"triggers": [{"trigger": "homeassistant", "event": "shutdown"}]}
+    assert statuses(backtest(start, make_history([]), START, END, downtime=[(down, up)], events=events)) == [("03:02", EXECUTED)]
+    assert statuses(backtest(stop, make_history([]), START, END, downtime=[(down, up)], events=events)) == [("03:00", EXECUTED)]
+
+
+def test_events_ignored_while_offline(make_history):
+    down, up = ts("2026-11-10 03:00"), ts("2026-11-10 03:10")
+    events = [ev("2026-11-10 03:05", "my_event")]
+    config = {"triggers": [{"trigger": "event", "event_type": "my_event"}]}
+    assert backtest(config, make_history([]), START, END, downtime=[(down, up)], events=events).runs == []
+
+
+def test_wanted_event_types():
+    from engine import wanted_event_types
+    config = {"triggers": [{"trigger": "event", "event_type": ["a", "b"]}, {"trigger": "homeassistant", "event": "start"}]}
+    assert wanted_event_types(config) == {"a", "b", "homeassistant_stop", "homeassistant_started"}

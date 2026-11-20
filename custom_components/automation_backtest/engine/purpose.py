@@ -202,8 +202,11 @@ for _q, _dc in {
     TRIGGERS[f"air_quality.{_q}_changed"] = _num("sensor", _num_state, False, (_dc,))
     TRIGGERS[f"air_quality.{_q}_crossed_threshold"] = _num("sensor", _num_state, True, (_dc,))
 
+TRIGGERS["sun.elevation_changed"] = _num("sun", _num_attr("elevation"), False)
+TRIGGERS["sun.elevation_crossed_threshold"] = _num("sun", _num_attr("elevation"), True)
+
 NOT_REPLAYABLE = {
-    "sun": "depends on the sun position, which is not recorded",
+    "sun": "(golden/blue hour, polar day/night) is not supported yet",
     "moon": "depends on the moon phase calculation",
     "calendar": "depends on calendar events, which are not in state history",
     "todo": "depends on to-do list events",
@@ -359,9 +362,9 @@ def _matches(spec: Spec, snap: StateSnapshot | None, ctx: EvalContext, threshold
 def make_purpose_trigger(base_cls, raw: dict[str, Any], index: int):
     name = raw.get("trigger") or raw.get("platform")
     domain = name.split(".", 1)[0]
-    if domain in NOT_REPLAYABLE:
-        raise UnsupportedFeature(f"Trigger '{name}' {NOT_REPLAYABLE[domain]}")
     spec = TRIGGERS.get(name)
+    if spec is None and domain in NOT_REPLAYABLE:
+        raise UnsupportedFeature(f"Trigger '{name}' {NOT_REPLAYABLE[domain]}")
     if spec is None:
         raise UnsupportedFeature(f"Trigger '{name}' cannot be replayed from state history (yet)")
 
@@ -371,7 +374,7 @@ def make_purpose_trigger(base_cls, raw: dict[str, Any], index: int):
         def __init__(self) -> None:
             super().__init__(raw, index)
             self.spec = spec
-            self.entity_ids = _entities(raw)
+            self.entity_ids = _entities(raw) or (["sun.sun"] if spec.domains == ("sun",) else [])
             if not self.entity_ids:
                 raise UnsupportedFeature(f"Trigger '{name}': the target matches no {'/'.join(spec.domains)} entity")
             options = _options(raw)

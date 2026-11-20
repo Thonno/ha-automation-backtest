@@ -14,9 +14,10 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from homeassistant.util import dt as dt_util
 
 from .const import ATTR_AUTOMATION, ATTR_CONFIG, ATTR_DAYS, ATTR_END, ATTR_START, MAX_DAYS
-from .engine import BacktestResult, HistoryStore, StateSnapshot, backtest, extract_entities
+from .engine import BacktestResult, HistoryStore, StateSnapshot, backtest, extract_entities, wanted_event_types
 from .engine.purpose import entity_filter, is_purpose
-from .restarts import async_get_downtime
+from .restarts import async_get_downtime, async_get_events
+from .engine.sun import EVENTS as SUN_EVENTS, days_between, table_provider
 
 _LOGGER = logging.getLogger(__name__)
 _REGISTRY_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -85,6 +86,21 @@ def period(hass: HomeAssistant, data: dict[str, Any]) -> tuple[datetime, datetim
     return dt_util.as_utc(start), dt_util.as_utc(end), tz
 
 
+def sun_table(hass: HomeAssistant, start: datetime, end: datetime, tz: tzinfo) -> dict:
+    """Sun events per local day, computed by Home Assistant itself (same times as live)."""
+    from homeassistant.helpers.sun import get_astral_event_date
+
+    table: dict[str, dict[str, datetime | None]] = {}
+    for day in days_between(start, end, tz):
+        table[day.isoformat()] = {}
+        for event in SUN_EVENTS:
+            try:
+                table[day.isoformat()][event] = get_astral_event_date(hass, event, day)
+            except Exception:  # noqa: BLE001 - polar day/night or no location
+                table[day.isoformat()][event] = None
+    return table
+
+
 async def run(
     hass: HomeAssistant, config: dict[str, Any], start: datetime, end: datetime, tz: tzinfo
 ) -> BacktestResult:
@@ -119,9 +135,19 @@ async def run(
                 )
 
     downtime = await async_get_downtime(hass, start, end)
+    sun = table_provider(sun_table(hass, start, end, tz))
+    event_types = wanted_event_types(config)
+    events = await async_get_events(hass, event_types, start, end) if event_types else []
     result = await hass.async_add_executor_job(
-        backtest, config, store, start, end, tz, downtime or []
+        backtest, config, store, start, end, tz, downtime or [], sun, events or []
     )
+    if events is None:
+        result.warnings.append("Could not read events from the recorder: event triggers were not replayed")
+    elif event_types - {"homeassistant_stop", "homeassistant_started"} and not events:
+        result.warnings.append(
+            "No recorded events of type " + ", ".join(sorted(event_types))
+            + " in this window (the recorder may exclude them)"
+        )
     if downtime is None:
         result.warnings.append(
             "Could not read Home Assistant restarts from the recorder: "

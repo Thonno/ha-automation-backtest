@@ -7,6 +7,7 @@ next `homeassistant_started` must not fire in the simulation.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,48 @@ from homeassistant.core import HomeAssistant
 _LOGGER = logging.getLogger(__name__)
 
 from .engine.downtime import STARTED, START, STOP, windows_from_events
+from .engine.triggers import RecordedEvent
+
+MAX_EVENTS = 50_000
+
+
+async def async_get_events(
+    hass: HomeAssistant, event_types: set[str], start: datetime, end: datetime
+) -> list[RecordedEvent] | None:
+    """Recorded events of the given types in [start, end], with their data."""
+    from homeassistant.components.recorder import get_instance
+
+    def _query() -> list[RecordedEvent]:
+        from sqlalchemy import select
+
+        from homeassistant.components.recorder.db_schema import EventData, Events, EventTypes
+        from homeassistant.components.recorder.util import session_scope
+
+        stmt = (
+            select(EventTypes.event_type, Events.time_fired_ts, EventData.shared_data)
+            .join(EventTypes, Events.event_type_id == EventTypes.event_type_id)
+            .outerjoin(EventData, Events.data_id == EventData.data_id)
+            .where(EventTypes.event_type.in_(sorted(event_types)))
+            .where(Events.time_fired_ts > start.timestamp())
+            .where(Events.time_fired_ts <= end.timestamp())
+            .order_by(Events.time_fired_ts)
+            .limit(MAX_EVENTS)
+        )
+        out: list[RecordedEvent] = []
+        with session_scope(hass=hass, read_only=True) as session:
+            for etype, ts, raw in session.execute(stmt).all():
+                try:
+                    data = json.loads(raw) if raw else {}
+                except ValueError:
+                    data = {}
+                out.append(RecordedEvent(datetime.fromtimestamp(ts, tz=timezone.utc), etype, data))
+        return out
+
+    try:
+        return await get_instance(hass).async_add_executor_job(_query)
+    except Exception:  # noqa: BLE001 - schema differences must never break a backtest
+        _LOGGER.debug("Could not read events from the recorder", exc_info=True)
+        return None
 
 
 async def async_get_downtime(

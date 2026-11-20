@@ -107,6 +107,102 @@ class BaseTrigger:
     def on_timer(self, key: Any, token: int, ctx: EvalContext) -> TriggerOutput:
         return TriggerOutput()
 
+    # Recorded events (event / tag / homeassistant triggers) -------------------
+    event_types: frozenset[str] = frozenset()
+
+    def on_event(self, event: "RecordedEvent", ctx: EvalContext) -> TriggerOutput:
+        return TriggerOutput()
+
+
+@dataclass
+class RecordedEvent:
+    time: datetime
+    event_type: str
+    data: dict[str, Any]
+
+
+def _data_matches(expected: Any, actual: Any) -> bool:
+    """HA validates event_data with an ALLOW_EXTRA schema: a subset match on equal values."""
+    if isinstance(expected, dict):
+        return isinstance(actual, dict) and all(
+            k in actual and _data_matches(v, actual[k]) for k, v in expected.items()
+        )
+    return expected == actual
+
+
+def _has_template(value: Any) -> bool:
+    if isinstance(value, str):
+        return "{{" in value or "{%" in value
+    if isinstance(value, dict):
+        return any(_has_template(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_has_template(v) for v in value)
+    return False
+
+
+class EventTrigger(BaseTrigger):
+    platform = "event"
+
+    def __init__(self, config: dict[str, Any], index: int) -> None:
+        super().__init__(config, index)
+        types = as_list(config.get("event_type"))
+        if not types:
+            raise UnsupportedFeature("Event trigger without event_type")
+        if _has_template(types) or _has_template(config.get("event_data")):
+            raise UnsupportedFeature("Templated event_type/event_data cannot be replayed (yet)")
+        if config.get("context"):
+            raise UnsupportedFeature("Event trigger 'context' (user filter) is not recorded")
+        if "state_changed" in types:
+            raise UnsupportedFeature("'state_changed' event triggers: use a state trigger")
+        self.event_types = frozenset(str(t) for t in types)
+        self.event_data = config.get("event_data") or {}
+
+    def on_event(self, event: RecordedEvent, ctx: EvalContext) -> TriggerOutput:
+        if event.event_type not in self.event_types or not _data_matches(self.event_data, event.data):
+            return TriggerOutput()
+        variables = self.variables(event={"event_type": event.event_type, "data": event.data})
+        shown = ", ".join(f"{k}={v}" for k, v in list(event.data.items())[:3])
+        return TriggerOutput(firings=[Firing(ctx.now, variables, f"{event.event_type} ({shown})" if shown else event.event_type)])
+
+
+class TagTrigger(BaseTrigger):
+    platform = "tag"
+    event_types = frozenset({"tag_scanned"})
+
+    def __init__(self, config: dict[str, Any], index: int) -> None:
+        super().__init__(config, index)
+        self.tag_ids = {str(t) for t in as_list(config.get("tag_id"))}
+        self.device_ids = {str(d) for d in as_list(config.get("device_id"))}
+        if not self.tag_ids:
+            raise UnsupportedFeature("Tag trigger without tag_id")
+
+    def on_event(self, event: RecordedEvent, ctx: EvalContext) -> TriggerOutput:
+        tag, device = str(event.data.get("tag_id")), str(event.data.get("device_id"))
+        if tag not in self.tag_ids or (self.device_ids and device not in self.device_ids):
+            return TriggerOutput()
+        return TriggerOutput(firings=[Firing(
+            ctx.now, self.variables(tag_id=tag, device_id=device, event={"event_type": "tag_scanned", "data": event.data}),
+            f"tag {tag}",
+        )])
+
+
+class HomeAssistantTrigger(BaseTrigger):
+    """`trigger: homeassistant` – start fires when HA is up again, shutdown on a clean stop."""
+
+    platform = "homeassistant"
+
+    def __init__(self, config: dict[str, Any], index: int) -> None:
+        super().__init__(config, index)
+        self.event = config.get("event")
+        if self.event not in ("start", "shutdown"):
+            raise UnsupportedFeature(f"Home Assistant trigger with event {self.event!r}")
+        self.event_types = frozenset({"homeassistant_stop"} if self.event == "shutdown" else {"homeassistant_started"})
+
+    def on_event(self, event: RecordedEvent, ctx: EvalContext) -> TriggerOutput:
+        if event.event_type not in self.event_types:
+            return TriggerOutput()
+        return TriggerOutput(firings=[Firing(ctx.now, self.variables(event=self.event), f"Home Assistant {self.event}")])
+
 
 # --- state ------------------------------------------------------------------
 
@@ -394,6 +490,59 @@ class TimePatternTrigger(BaseTrigger):
         )
 
 
+# --- sun ----------------------------------------------------------------------
+
+SUN_PURPOSE = {
+    "sun.sunrise": "sunrise", "sun.sunset": "sunset", "sun.dawn": "dawn", "sun.dusk": "dusk",
+    "sun.solar_noon": "noon", "sun.solar_midnight": "midnight",
+}
+
+
+class SunTrigger(BaseTrigger):
+    """`trigger: sun` (event + offset) and the purpose-specific sun.sunrise / sun.sunset / ..."""
+
+    platform = "sun"
+
+    def __init__(self, config: dict[str, Any], index: int) -> None:
+        super().__init__(config, index)
+        name = config.get("trigger") or config.get("platform")
+        if name in SUN_PURPOSE:
+            self.platform = name
+            self.event = SUN_PURPOSE[name]
+            self.offset = parse_duration((config.get("options") or {}).get("offset")) or timedelta(0)
+        else:
+            self.event = config.get("event")
+            if self.event not in ("sunrise", "sunset"):
+                raise UnsupportedFeature(f"Sun trigger with event {self.event!r}")
+            self.offset = parse_duration(config.get("offset")) or timedelta(0)
+        self._sun = None
+
+    def on_start(self, ctx: EvalContext) -> None:
+        if ctx.sun is None:
+            raise UnsupportedFeature("Sun trigger needs the home location")
+        self._sun = ctx.sun
+
+    def scheduled_times(self, start: datetime, end: datetime, tz: tzinfo) -> list[datetime]:
+        day = start.astimezone(tz).date() - timedelta(days=1)
+        last = end.astimezone(tz).date() + timedelta(days=1)
+        out: set[datetime] = set()
+        while day <= last:
+            when = self._sun(self.event, day)
+            if when is not None and start < when + self.offset <= end:
+                out.add(when + self.offset)
+            day += timedelta(days=1)
+        return sorted(out)
+
+    def on_scheduled(self, ctx: EvalContext) -> TriggerOutput:
+        local = ctx.now.astimezone(ctx.tz)
+        sign = "+" if self.offset >= timedelta(0) else "-"
+        offset = f" {sign}{abs(self.offset)}" if self.offset else ""
+        return TriggerOutput(firings=[Firing(
+            ctx.now, self.variables(event=self.event, offset=str(self.offset)),
+            f"{self.event}{offset} ({local.strftime('%H:%M:%S')})",
+        )])
+
+
 # --- template -----------------------------------------------------------------
 
 
@@ -470,6 +619,10 @@ _TRIGGERS = {
     "time": TimeTrigger,
     "time_pattern": TimePatternTrigger,
     "template": TemplateTrigger,
+    "sun": SunTrigger,
+    "event": EventTrigger,
+    "tag": TagTrigger,
+    "homeassistant": HomeAssistantTrigger,
 }
 
 
@@ -479,6 +632,8 @@ def build_trigger(raw: dict[str, Any], index: int) -> BaseTrigger:
         raw = device_trigger_to_state(raw)
         platform = raw["trigger"]
     cls = _TRIGGERS.get(platform)
+    if cls is None and platform in SUN_PURPOSE:
+        return SunTrigger(raw, index)
     if cls is None and is_purpose(platform):
         return make_purpose_trigger(BaseTrigger, raw, index)
     if cls is None:

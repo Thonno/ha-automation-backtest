@@ -152,7 +152,7 @@ const TEMPLATE = `triggers:
     to: "on"
 conditions: []
 `;
-const LOGO = `<svg viewBox="0 0 64 64" class="logo-ic" aria-hidden="true"><defs><linearGradient id="abt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbb04f"/><stop offset="1" stop-color="#e5762f"/></linearGradient></defs><rect x="4" y="4" width="56" height="56" rx="16" fill="url(#abt-g)"/><path d="M32 15a17 17 0 1 1-16.1 11.6" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M12 17v11h11" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 23v10l7 5" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const LOGO = `<svg viewBox="16 16 224 224" class="logo-ic" aria-hidden="true"><defs><linearGradient id="abt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f7ad4c"/><stop offset="1" stop-color="#e5762e"/></linearGradient></defs><rect x="16" y="16" width="224" height="224" rx="48" fill="url(#abt-g)"/><path d="M 75.6 91.3 A 64 64 0 1 1 66.2 144.6" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round"/><path d="M 60 114 L 97 98 L 62 72 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><rect x="98" y="132" width="14" height="30" rx="5" fill="#fff" opacity=".85"/><rect x="121" y="112" width="14" height="50" rx="5" fill="#fff" opacity=".85"/><rect x="144" y="96" width="14" height="66" rx="5" fill="#fff" opacity=".85"/><circle cx="176" cy="88" r="11" fill="#8a4513" stroke="#fff" stroke-width="5"/></svg>`;
 const MENU_PATH = "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z";
 const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
 const PERIODS = [1, 3, 7, 14];

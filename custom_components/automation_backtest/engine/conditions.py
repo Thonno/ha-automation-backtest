@@ -7,7 +7,7 @@ Every evaluation returns a tri-state result: True, False, or None
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, tzinfo
+from datetime import datetime, timedelta, tzinfo
 from typing import Any
 
 from .devices import device_condition_to_state
@@ -33,6 +33,7 @@ class EvalContext:
     tz: tzinfo
     renderer: TemplateRenderer
     variables: dict[str, Any] = field(default_factory=dict)
+    sun: Any = None  # SunProvider: (event, local date) -> datetime | None
 
 
 @dataclass
@@ -258,6 +259,41 @@ def _trigger_condition(cond: dict, ctx: EvalContext):
     return current in wanted, f"trigger id {current!r} (wanted {wanted})"
 
 
+def _sun_condition(cond: dict, ctx: EvalContext):
+    """Same rules as Home Assistant's sun condition (events of the local 'today')."""
+    if ctx.sun is None:
+        raise UnsupportedFeature("Sun condition needs the home location")
+    day = ctx.now.astimezone(ctx.tz).date()
+    sunrise, sunset = ctx.sun("sunrise", day), ctx.sun("sunset", day)
+    before, after = cond.get("before"), cond.get("after")
+    before_offset = parse_duration(cond.get("before_offset")) or timedelta(0)
+    after_offset = parse_duration(cond.get("after_offset")) or timedelta(0)
+    hhmm = lambda dt: dt.astimezone(ctx.tz).strftime("%H:%M:%S")  # noqa: E731
+    if before is None and after is None:
+        raise UnsupportedFeature("Sun condition without before/after")
+
+    def at(event: str) -> datetime:
+        when = sunrise if event == "sunrise" else sunset
+        if when is None:
+            raise UnsupportedFeature(f"No {event} today at this latitude (polar day/night)")
+        return when
+
+    if before == "sunrise" and after == "sunset":  # night: before sunrise OR after sunset
+        b, a = at("sunrise") + before_offset, at("sunset") + after_offset
+        ok = ctx.now < b or ctx.now > a
+        return ok, f"now {hhmm(ctx.now)}; night = before {hhmm(b)} or after {hhmm(a)}"
+    ok, parts = True, []
+    if before is not None:
+        limit = at(before) + before_offset
+        ok = ok and not ctx.now > limit
+        parts.append(f"before {before} {hhmm(limit)}")
+    if after is not None:
+        limit = at(after) + after_offset
+        ok = ok and not ctx.now < limit
+        parts.append(f"after {after} {hhmm(limit)}")
+    return ok, f"now {hhmm(ctx.now)}; " + ", ".join(parts)
+
+
 def _device_condition(cond: dict, ctx: EvalContext):
     native = device_condition_to_state(cond)
     if native["condition"] == "numeric_state":
@@ -267,6 +303,7 @@ def _device_condition(cond: dict, ctx: EvalContext):
 
 _HANDLERS = {
     "device": _device_condition,
+    "sun": _sun_condition,
     "state": _state_condition,
     "numeric_state": _numeric_state_condition,
     "time": _time_condition,

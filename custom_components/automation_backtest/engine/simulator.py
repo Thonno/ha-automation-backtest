@@ -118,6 +118,8 @@ def backtest(
     end: datetime,
     tz: tzinfo = timezone.utc,
     downtime: list[tuple[datetime, datetime]] | None = None,
+    sun: Any = None,
+    events: list[Any] | None = None,
 ) -> BacktestResult:
     """Replay `config` over [start, end] and report every would-be run.
 
@@ -142,7 +144,7 @@ def backtest(
 
     renderer = TemplateRenderer()
     states = SimulatedStates(history, start)
-    ctx = EvalContext(states=states, now=start, tz=tz, renderer=renderer)
+    ctx = EvalContext(states=states, now=start, tz=tz, renderer=renderer, sun=sun)
 
     triggers: list[BaseTrigger] = []
     for idx, raw in enumerate(raw_triggers):
@@ -167,6 +169,7 @@ def backtest(
 
     queue: list[tuple] = []
     seq = 0
+    stops_or_starts: list[Any] = []
 
     def push(when: datetime, prio: int, payload: tuple) -> None:
         nonlocal seq
@@ -175,6 +178,13 @@ def backtest(
 
     for change in history.changes_between(start, end):
         push(change.time, _PRIO_CHANGE, ("change", change))
+    for event in events or []:
+        if start < event.time <= end:
+            # stop is handled with the 'down' marker, started with the 'up' marker
+            if event.event_type in ("homeassistant_stop", "homeassistant_started"):
+                stops_or_starts.append(event)
+            else:
+                push(event.time, _PRIO_CHANGE, ("event", event))
     disabled: set[int] = set()
     for trig in triggers:
         try:
@@ -227,6 +237,10 @@ def backtest(
         ctx.now = when
         kind = payload[0]
         if kind == "down":
+            for event in stops_or_starts:  # clean stop: shutdown triggers still run
+                if event.event_type == "homeassistant_stop" and abs((event.time - when).total_seconds()) < 1:
+                    for trig in triggers:
+                        safe(trig, trig.on_event, event, ctx)
             offline = True
             for trig in triggers:
                 trig.cancel_pending()
@@ -234,6 +248,14 @@ def backtest(
             offline = False
             for trig in triggers:
                 rearm(trig)
+            for event in stops_or_starts:
+                if event.event_type == "homeassistant_started" and abs((event.time - when).total_seconds()) < 1:
+                    for trig in triggers:
+                        safe(trig, trig.on_event, event, ctx)
+        elif kind == "event":
+            if not offline:
+                for trig in triggers:
+                    safe(trig, trig.on_event, payload[1], ctx)
         elif kind == "change":
             change = payload[1]
             states.apply(change)
@@ -251,6 +273,21 @@ def backtest(
 
     result.runs.sort(key=lambda r: (r.time, r.trigger_index))
     return result
+
+
+def wanted_event_types(config: dict[str, Any]) -> set[str]:
+    """Recorded event types the triggers of `config` listen to."""
+    wanted: set[str] = set()
+    for idx, raw in enumerate(as_list(config.get("triggers", config.get("trigger")))):
+        if not isinstance(raw, dict) or raw.get("enabled") is False:
+            continue
+        try:
+            wanted |= set(build_trigger(raw, idx).event_types)
+        except UnsupportedFeature:
+            continue
+    if wanted & {"homeassistant_stop", "homeassistant_started"}:
+        wanted |= {"homeassistant_stop", "homeassistant_started"}
+    return wanted
 
 
 def _evaluate_run(trig: BaseTrigger, firing: Firing, conditions: list, ctx: EvalContext) -> Run:
