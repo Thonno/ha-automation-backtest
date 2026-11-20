@@ -20,13 +20,15 @@ def _from_template(text: str, found: set[str]) -> None:
     found.update(f"{d}.{o}" for d, o in _DOTTED_RE.findall(text))
 
 
-def extract_entities(config: Any) -> set[str]:
+def extract_entities(config: Any, include_actions: bool = False) -> set[str]:
+    """Entities of triggers/conditions (and, if asked, of the actions too)."""
     found: set[str] = set()
+    skip = set() if include_actions else _SKIP_KEYS
 
     def walk(node: Any, key: str | None = None) -> None:
         if isinstance(node, dict):
             for k, v in node.items():
-                if k in _SKIP_KEYS:
+                if k in skip:
                     continue
                 walk(v, k)
         elif isinstance(node, list):

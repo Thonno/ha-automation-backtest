@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from typing import Any
 
+from .actions import Step, action_list, dry_run
 from .conditions import ConditionTrace, EvalContext, evaluate_conditions
 from .history import HistoryStore, SimulatedStates
 from .templates import TemplateRenderer
@@ -31,6 +32,9 @@ class Run:
     description: str
     status: str
     conditions: list[ConditionTrace] = field(default_factory=list)
+    variables: dict[str, Any] = field(default_factory=dict, repr=False)
+    actions: list[Step] = field(default_factory=list)
+    action_note: str | None = None
 
     @property
     def blocked_by(self) -> ConditionTrace | None:
@@ -62,6 +66,10 @@ class Run:
             out["blocked_by"] = self.blocked_by.as_dict()
         if self.status == UNCERTAIN and self.uncertain_because:
             out["uncertain_because"] = self.uncertain_because.as_dict()
+        if self.actions:
+            out["actions"] = [s.as_dict(tz) for s in self.actions]
+        if self.action_note:
+            out["action_note"] = self.action_note
         return out
 
 
@@ -74,6 +82,8 @@ class BacktestResult:
     warnings: list[str] = field(default_factory=list)
     unsupported_triggers: list[dict[str, Any]] = field(default_factory=list)
     downtime: list[tuple[datetime, datetime]] = field(default_factory=list)
+    controlled: list[str] = field(default_factory=list)
+    simulated: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def count(self, status: str) -> int:
         return sum(1 for r in self.runs if r.status == status)
@@ -97,6 +107,8 @@ class BacktestResult:
                 {"stopped": iso(a.astimezone(self.tz)), "started": iso(b.astimezone(self.tz))}
                 for a, b in self.downtime
             ],
+            "controlled": list(self.controlled),
+            "simulated": dict(self.simulated),
         }
         if include_runs:
             out["runs"] = [r.as_dict(self.tz) for r in runs]
@@ -272,6 +284,12 @@ def backtest(
             safe(trig, trig.on_timer, key, token, ctx)
 
     result.runs.sort(key=lambda r: (r.time, r.trigger_index))
+    if action_list(config):
+        sim, outcomes = dry_run(config, result.runs, history, start, end, tz, sun)
+        for run, (steps, note) in zip(result.runs, outcomes):
+            run.actions, run.action_note = steps, note
+        result.controlled = sim.targets
+        result.simulated = sim.series()
     return result
 
 
@@ -305,4 +323,5 @@ def _evaluate_run(trig: BaseTrigger, firing: Firing, conditions: list, ctx: Eval
         description=firing.description,
         status=status,
         conditions=traces,
+        variables=dict(firing.variables),
     )

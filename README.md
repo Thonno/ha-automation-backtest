@@ -71,6 +71,7 @@ You write or tweak an automation and then wait a week to find out whether it wor
 
 - **Sidebar panel** (admins only) with a timeline of every would-be run (✓ executed, ✕ blocked, ◆ uncertain), the entities the automation depends on, the thresholds it uses as dashed lines, and Home Assistant restarts as grey bands. Drag to zoom, double-click to reset.
 - **Full condition trace** for each run, with the blocking condition highlighted.
+- **What it would have done**: the actions are dry-run for every executed run (service calls, delays, `choose`/`if`, `repeat`, `variables`, `stop`), and the entities they control get their own lanes, **Real**, **Simulated** or **Both**. Simulated is the state each entity would have had if only this automation had driven it, with `mode: single / restart / queued` taken into account. Check an automation in seconds instead of waiting a week.
 - **Drafts with Home Assistant's own editor**: tick *Try a change* to edit triggers and conditions with the same visual blocks (entity pickers, durations, states) as the real automation editor, or in YAML. Nothing is saved.
 - **New automations**: *＋ New automation (draft)* lets you backtest something that doesn't exist yet.
 - **Compare A/B**: the saved automation against your draft over the same period. Runs only in A, only in B, and **shifted** runs (same cause, different time, e.g. after changing a `for:`) with the delta.
@@ -127,7 +128,7 @@ The engine has been checked against real runs on a live installation: for every 
 ## Limits worth knowing
 
 - **History depth = your recorder.** Entities excluded from the recorder have no history.
-- **Actions are not simulated**, so `mode: single` / `restart` interactions and automations that react to their own actions are not modelled.
+- **Actions are only dry-run**: nothing is executed. Common services are simulated (on/off/toggle, brightness, covers, locks, climate, `input_*`, counters, timers, media, vacuums); scripts, scenes, `wait_*`, device actions other than on/off and custom services are listed as *not simulated*. Triggers and conditions still see the real history, so an automation that reacts to its own actions is not modelled.
 - `input_datetime` used in a `time` trigger is read at the start of the window.
 - A `for:` uses recorded timestamps; very short values may be affected by how often a device reports.
 - The ⋮ menu entries are added by a small script, because Home Assistant has no official extension point for those menus. It fails silently: if a future release changes the menus, the entry disappears until it is updated and the sidebar panel keeps working.

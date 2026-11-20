@@ -104,8 +104,8 @@ def sun_table(hass: HomeAssistant, start: datetime, end: datetime, tz: tzinfo) -
 async def run(
     hass: HomeAssistant, config: dict[str, Any], start: datetime, end: datetime, tz: tzinfo
 ) -> BacktestResult:
-    config = resolve_purpose_targets(hass, config)
-    entity_ids = sorted(extract_entities(config))
+    config = resolve_action_targets(hass, resolve_purpose_targets(hass, config))
+    entity_ids = sorted(extract_entities(config, include_actions=True))
     store = HistoryStore()
     missing: list[str] = []
     if entity_ids:
@@ -250,3 +250,37 @@ def resolve_purpose_targets(hass: HomeAssistant, config: Any) -> Any:
         return out
 
     return walk(config)
+
+
+# --- action targets given as device/area/floor/label ------------------------------
+
+_DOMAINLESS = {"homeassistant"}
+
+
+def resolve_action_targets(hass: HomeAssistant, config: Any) -> Any:
+    """Add `_entities` to service calls whose target is a device/area/floor/label."""
+    if not isinstance(config, dict):
+        return config
+
+    def walk(node: Any) -> Any:
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        if not isinstance(node, dict):
+            return node
+        out = {k: walk(v) for k, v in node.items()}
+        service = out.get("action", out.get("service"))
+        target = out.get("target")
+        if isinstance(service, str) and "." in service and isinstance(target, dict) and any(
+            k in target for k in ("device_id", "area_id", "floor_id", "label_id")
+        ):
+            domain = service.split(".", 1)[0]
+            found = target_entities(hass, {k: v for k, v in target.items() if k != "entity_id"})
+            if domain not in _DOMAINLESS:
+                found = {e for e in found if e.split(".", 1)[0] == domain}
+            out["_entities"] = sorted(found)
+        return out
+
+    key = "actions" if "actions" in config else "action"
+    if key not in config:
+        return config
+    return {**config, key: walk(config[key])}

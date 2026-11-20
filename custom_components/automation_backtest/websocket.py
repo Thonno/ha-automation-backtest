@@ -90,10 +90,24 @@ async def _source_config(
     hass: HomeAssistant, msg: dict[str, Any], yaml_key: str, obj_key: str = "config"
 ) -> dict[str, Any]:
     if msg.get(obj_key):
-        return runner.resolve_registry_ids(hass, msg[obj_key])
-    if msg.get(yaml_key):
-        return runner.resolve_registry_ids(hass, _yaml_to_config(msg[yaml_key]))
-    return await runner.automation_config(hass, {ATTR_AUTOMATION: msg.get("automation")})
+        config = runner.resolve_registry_ids(hass, msg[obj_key])
+    elif msg.get(yaml_key):
+        config = runner.resolve_registry_ids(hass, _yaml_to_config(msg[yaml_key]))
+    else:
+        return await runner.automation_config(hass, {ATTR_AUTOMATION: msg.get("automation")})
+    return _with_saved_actions(hass, config, msg.get("actions_from") or msg.get("automation"))
+
+
+def _with_saved_actions(hass: HomeAssistant, config: dict[str, Any], entity_id: str | None) -> dict[str, Any]:
+    """A draft only carries triggers/conditions: borrow actions + mode from the saved automation."""
+    if not entity_id or "actions" in config or "action" in config:
+        return config
+    try:
+        saved = runner.resolve_registry_ids(hass, runner.raw_automation_config(hass, entity_id))
+    except HomeAssistantError:
+        return config
+    extra = {k: saved[k] for k in ("actions", "action", "mode") if k in saved}
+    return {**config, **extra}
 
 
 def _full_result(result, config: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +153,7 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         vol.Exclusive("automation", "source"): str,
         vol.Exclusive("config_yaml", "source"): str,
         vol.Exclusive("config", "source"): dict,
+        vol.Optional("actions_from"): str,
         **_PERIOD,
     }
 )
@@ -162,6 +177,7 @@ async def ws_run(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         vol.Exclusive("config_a_yaml", "a"): str,
         vol.Exclusive("config_b_yaml", "b"): str,
         vol.Exclusive("config_b", "b"): dict,
+        vol.Optional("actions_from"): str,
         **_PERIOD,
     }
 )

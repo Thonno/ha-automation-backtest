@@ -73,6 +73,17 @@ const STR = {
     dayShort: "d",
     selectFirst: "Choose an automation first.",
     nothingInView: "Nothing in this part of the chart.",
+    actions: "Actions (dry run)",
+    noActionsRun: "Nothing to do: this run was not executed.",
+    controlled: "Controlled",
+    viewReal: "Real",
+    viewSim: "Simulated",
+    viewBoth: "Both",
+    simTag: "sim",
+    realTag: "real",
+    simHint: "Simulated = the state if only this automation had driven it",
+    actionNote: { skipped: "mode: single — already running, this run would be skipped", restarted: "mode: restart — the previous run was cut short", queued: "mode: queued — waits for the previous run" },
+    stepResult: { done: "Done", not_simulated: "Not simulated", skipped: "Skipped", stopped: "Stopped" },
     status: { executed: "Executed", blocked: "Blocked", uncertain: "Uncertain" },
   },
   it: {
@@ -142,6 +153,17 @@ const STR = {
     dayShort: "g",
     selectFirst: "Scegli prima un'automazione.",
     nothingInView: "Niente in questa parte del grafico.",
+    actions: "Azioni (simulate)",
+    noActionsRun: "Niente da fare: questa esecuzione non è partita.",
+    controlled: "Comandate",
+    viewReal: "Reale",
+    viewSim: "Simulato",
+    viewBoth: "Entrambi",
+    simTag: "sim",
+    realTag: "reale",
+    simHint: "Simulato = lo stato se a comandarla fosse stata solo questa automazione",
+    actionNote: { skipped: "mode: single — già in esecuzione, questa esecuzione verrebbe saltata", restarted: "mode: restart — l'esecuzione precedente viene interrotta", queued: "mode: queued — aspetta la fine della precedente" },
+    stepResult: { done: "Fatto", not_simulated: "Non simulato", skipped: "Saltato", stopped: "Interrotta" },
     status: { executed: "Eseguita", blocked: "Bloccata", uncertain: "Incerta" },
   },
 };
@@ -160,6 +182,8 @@ const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
 const PERIODS = [1, 3, 7, 14];
 const LIST_PAGE = 200;
 const MAX_ENTITY_LANES = 8;
+const MAX_CONTROLLED_LANES = 6;
+const STEP_ICON = { done: "✓", not_simulated: "?", skipped: "–", stopped: "■" };
 
 function findDeep(root, selector, depth = 0) {
   if (!root || depth > 12) return null;
@@ -223,6 +247,7 @@ class AutomationBacktestPanel extends HTMLElement {
       selected: -1,
       statusFilter: null,
       listLimit: LIST_PAGE,
+      actView: "both", // real | sim | both (controlled-entity lanes)
     };
     this._drag = null;
   }
@@ -595,7 +620,30 @@ ${this._chartBar()}
       <p><code>${esc(run.trigger.platform)}</code> · id <code>${esc(run.trigger.id)}</code><br>${esc(run.trigger.description)}</p>
       ${run.blocked_by ? `<p class="reason blocked"><b>${esc(t.blockedBy)}</b> ${esc(run.blocked_by.condition)} — ${esc(run.blocked_by.detail)}</p>` : ""}
       ${run.uncertain_because ? `<p class="reason uncertain"><b>${esc(t.uncertainBecause)}</b> ${esc(run.uncertain_because.detail)}</p>` : ""}
-      <h3>${esc(t.conditions)}</h3><ul class="trace">${conds}</ul>`;
+      <h3>${esc(t.conditions)}</h3><ul class="trace">${conds}</ul>
+      ${this._actionsHtml(run, r)}`;
+  }
+
+  _actionsHtml(run, r) {
+    const t = this._t;
+    if (!run.actions?.length && !run.action_note) {
+      const has = r.runs.some((x) => x.actions?.length);
+      return has && run.status !== "executed" ? `<h3>${esc(t.actions)}</h3><p class="muted">${esc(t.noActionsRun)}</p>` : "";
+    }
+    const cls = { done: "executed", stopped: "blocked", not_simulated: "uncertain", skipped: "uncertain" };
+    const t0 = Date.parse(run.time);
+    const steps = (run.actions || [])
+      .map((st) => {
+        const depth = Math.max(0, st.path.split("/").filter((p) => /^\d+$/.test(p)).length - 1);
+        const dt = Math.round((Date.parse(st.time) - t0) / 1000);
+        const off = dt > 0 ? `+${dt >= 3600 ? `${Math.floor(dt / 3600)}h${String(Math.floor((dt % 3600) / 60)).padStart(2, "0")}` : dt >= 60 ? `${Math.floor(dt / 60)}m${dt % 60 ? String(dt % 60).padStart(2, "0") + "s" : ""}` : `${dt}s`}` : "";
+        return `<li style="margin-left:${depth * 14}px" title="${esc(t.stepResult[st.result] || st.result)}">
+          <span class="dot ${cls[st.result] || "uncertain"}">${STEP_ICON[st.result] || "?"}</span>
+          <span><code>${esc(st.label)}</code>${off ? ` <span class="off">${esc(off)}</span>` : ""} <span class="muted">${esc(st.detail)}</span></span></li>`;
+      })
+      .join("");
+    const note = run.action_note ? `<p class="reason uncertain">${esc(t.actionNote[run.action_note] || run.action_note)}</p>` : "";
+    return `<h3>${esc(t.actions)}</h3>${note}<ul class="trace">${steps}</ul>`;
   }
 
   _compareTab() {
@@ -656,7 +704,12 @@ ${this._chartBar()}
     const t = this._t;
     const touch = !!window.matchMedia?.("(pointer: coarse)").matches;
     const v = !!this._s.view;
-    return `<div class="row between chart-bar"><span class="hint">${esc(touch ? t.zoomHintTouch : t.zoomHint)}</span>
+    const ctl = this._s.tab === "run" && this._s.result?.controlled?.length
+      ? `<span class="seg actview" title="${esc(t.simHint)}">${["real", "sim", "both"]
+          .map((k) => `<button class="${this._s.actView === k ? "on" : ""}" data-actview="${k}">${esc(t[{ real: "viewReal", sim: "viewSim", both: "viewBoth" }[k]])}</button>`)
+          .join("")}</span>`
+      : "";
+    return `<div class="row between chart-bar"><span class="hint">${esc(touch ? t.zoomHintTouch : t.zoomHint)}</span>${ctl}
       <span class="zoom-btns">
         ${v ? `<button class="zb pan-left" aria-label="◀">◀</button><button class="zb pan-right" aria-label="▶">▶</button>` : ""}
         <button class="zb zoom-out" aria-label="−"${v ? "" : " disabled"}>−</button>
@@ -678,6 +731,8 @@ ${this._chartBar()}
         entities: s.result.entities,
         thresholds: s.result.thresholds,
         restarts: s.result.restarts || [],
+        controlled: s.result.controlled || [],
+        simulated: s.result.simulated || {},
       };
     } else if (s.tab === "compare" && s.cmp) {
       const onlyA = new Set(s.cmp.diff.only_a.map((x) => Date.parse(x.time)));
@@ -743,7 +798,8 @@ ${this._chartBar()}
     }
 
     // entity lanes
-    const entities = (data.entities || []).filter((e) => this._s.history[e]).slice(0, MAX_ENTITY_LANES);
+    const controlled = (data.controlled || []).slice(0, MAX_CONTROLLED_LANES);
+    const entities = (data.entities || []).filter((e) => this._s.history[e] && !controlled.includes(e)).slice(0, MAX_ENTITY_LANES);
     for (const entityId of entities) {
       const series = this._s.history[entityId];
       const name = this._hass.states[entityId]?.attributes?.friendly_name || entityId;
@@ -787,19 +843,34 @@ ${this._chartBar()}
         parts.push(`<text x="${left - 8}" y="${y + h}" class="tick" text-anchor="end">${+lo.toFixed(1)}</text>`);
         y += h + 8;
       } else {
-        const h = 18;
-        series.forEach((p, i) => {
-          const next = series[i + 1];
-          const a = Math.max(p.t, t0);
-          const b = Math.min(next ? next.t : t1, t1);
-          if (b <= a) return;
-          const w = x(b) - x(a);
-          const fill = stateColor(p.s);
-          parts.push(`<rect x="${x(a).toFixed(1)}" y="${y}" width="${Math.max(0.5, w).toFixed(1)}" height="${h}" fill="${fill}" class="band"><title>${esc(name)}: ${esc(p.s)}\n${esc(this._fmtFull(p.t))}</title></rect>`);
-          if (w > 46) parts.push(`<text x="${(x(a) + 4).toFixed(1)}" y="${y + 13}" class="bandtxt">${esc(String(p.s).slice(0, Math.floor(w / 7)))}</text>`);
-        });
+        this._bands(parts, series, y, x, t0, t1, name, false);
         parts.push(`<text x="${left - 8}" y="${y + 13}" class="lbl" text-anchor="end"><title>${esc(entityId)}</title>${esc(short)}</text>`);
-        y += h + 8;
+        y += 18 + 8;
+      }
+    }
+
+    // entities driven by the actions: real vs simulated
+    if (controlled.length) {
+      const view = s.actView;
+      parts.push(`<text x="${left - 8}" y="${y + 10}" class="tick" text-anchor="end">${esc(t.controlled)}</text>`);
+      parts.push(`<line x1="${left}" x2="${left + plotW}" y1="${y + 6}" y2="${y + 6}" class="laneline"/>`);
+      y += 14;
+      for (const entityId of controlled) {
+        const name = this._hass.states[entityId]?.attributes?.friendly_name || entityId;
+        const max = this._narrow ? 12 : 24;
+        const lanes = [];
+        if (view !== "sim" && this._s.history[entityId]) lanes.push(["real", this._s.history[entityId]]);
+        if (view !== "real" && data.simulated[entityId]) {
+          lanes.push(["sim", data.simulated[entityId].map((p) => ({ s: p.s, a: p.a, t: Date.parse(p.t) }))]);
+        }
+        for (const [kind, series] of lanes) {
+          const tag = view === "both" ? ` · ${kind === "sim" ? t.simTag : t.realTag}` : kind === "sim" ? ` · ${t.simTag}` : "";
+          const room = max - tag.length;
+          const short = name.length > room ? name.slice(0, Math.max(4, room - 1)) + "…" : name;
+          this._bands(parts, series, y, x, t0, t1, name, kind === "sim");
+          parts.push(`<text x="${left - 8}" y="${y + 13}" class="lbl${kind === "sim" ? " simlbl" : ""}" text-anchor="end"><title>${esc(entityId)}</title>${esc(short + tag)}</text>`);
+          y += 18 + (kind === "real" && view === "both" ? 3 : 8);
+        }
       }
     }
 
@@ -842,6 +913,20 @@ ${this._chartBar()}
       ${ticks.join("")}${bands.join("")}${parts.join("")}${cursor}
       <rect class="brush" x="0" y="0" width="0" height="${bottom}" visibility="hidden"/>
     </svg>`;
+  }
+
+  _bands(parts, series, y, x, t0, t1, name, sim) {
+    const h = 18;
+    series.forEach((p, i) => {
+      const next = series[i + 1];
+      const a = Math.max(p.t, t0);
+      const b = Math.min(next ? next.t : t1, t1);
+      if (b <= a) return;
+      const w = x(b) - x(a);
+      const label = p.a ? `${p.s} ${p.a}` : String(p.s);
+      parts.push(`<rect x="${x(a).toFixed(1)}" y="${y}" width="${Math.max(0.5, w).toFixed(1)}" height="${h}" fill="${stateColor(p.s)}" class="band${sim ? " sim" : ""}"><title>${esc(name)}: ${esc(label)}\n${esc(this._fmtFull(p.t))}</title></rect>`);
+      if (w > 46) parts.push(`<text x="${(x(a) + 4).toFixed(1)}" y="${y + 13}" class="bandtxt">${esc(label.slice(0, Math.floor(w / 7)))}</text>`);
+    });
   }
 
   _tzOffset(ms) {
@@ -1030,6 +1115,9 @@ ${this._chartBar()}
       this.shadowRoot.querySelector(".detail")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     } else if (el.classList.contains("more")) {
       s.listLimit += LIST_PAGE;
+      this._renderBody();
+    } else if (el.dataset.actview) {
+      s.actView = el.dataset.actview;
       this._renderBody();
     } else if (el.classList.contains("zoom-in")) {
       this._zoomBy(0.5);
@@ -1336,7 +1424,7 @@ ${this._chartBar()}
   }
 
   async _loadHistory(entities, period) {
-    const wanted = entities.slice(0, MAX_ENTITY_LANES);
+    const wanted = entities.slice(0, MAX_ENTITY_LANES + MAX_CONTROLLED_LANES);
     if (!wanted.length) return {};
     try {
       const res = await this._ws({
@@ -1377,10 +1465,16 @@ ${this._chartBar()}
     this._renderBody();
     try {
       const msg = { type: "automation_backtest/run", ...this._periodMsg() };
-      if (s.automation === NEW || (s.editing && s.dirty)) Object.assign(msg, this._draftPayload("config", "config_yaml"));
-      else msg.automation = s.automation;
+      if (s.automation === NEW || (s.editing && s.dirty)) {
+        Object.assign(msg, this._draftPayload("config", "config_yaml"));
+        if (s.automation !== NEW) msg.actions_from = s.automation;
+      } else msg.automation = s.automation;
       const result = await this._ws(msg);
-      s.history = await this._loadHistory(result.entities, result.period);
+      const controlled = (result.controlled || []).slice(0, MAX_CONTROLLED_LANES);
+      s.history = await this._loadHistory(
+        result.entities.filter((e) => !controlled.includes(e)).slice(0, MAX_ENTITY_LANES).concat(controlled),
+        result.period
+      );
       s.result = result;
       s.selected = result.runs.findIndex((r) => r.status !== "executed");
     } catch (err) {
@@ -1548,6 +1642,12 @@ td.desc{word-break:break-word}
 .trace{list-style:none;padding:0;margin:0}
 .trace li{display:flex;gap:8px;align-items:flex-start;padding:6px;border-radius:12px;font-size:13px}
 .trace li .dot{flex:0 0 24px}
+.trace li .off{font-size:11px;font-weight:700;color:var(--acct);margin-left:2px}
+.seg{display:inline-flex;border:var(--bd);border-radius:12px;overflow:hidden}
+.seg button{border:0;background:var(--tile);color:var(--fg);font:inherit;font-size:12px;font-weight:600;padding:7px 10px;cursor:pointer}
+.seg button.on{background:var(--acc);color:#1b1b1b}
+svg .band.sim{opacity:.85;stroke:var(--acc);stroke-width:1;stroke-dasharray:3 2}
+svg .simlbl{fill:var(--acct)}
 .trace li.key{background:color-mix(in srgb,var(--out) 10%,transparent)}
 .muted{color:var(--t2)}
 code{font-family:var(--code-font-family,ui-monospace,monospace);font-size:12px;background:rgba(var(--fgr),.06);padding:1px 6px;border-radius:6px}
