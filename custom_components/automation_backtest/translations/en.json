@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation Backtest",
+        "description": "Adds the 'Backtest automation' and 'Compare automations' actions. Nothing is ever executed."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Automation Backtest is already set up."
+    }
+  },
+  "services": {
+    "run": {
+      "name": "Backtest automation",
+      "description": "Replay an automation over recorded history and report when it would have run, and which condition blocked it otherwise. Actions are never executed.",
+      "fields": {
+        "automation": {
+          "name": "Automation",
+          "description": "Existing automation to backtest."
+        },
+        "config": {
+          "name": "Configuration",
+          "description": "Automation YAML (triggers + conditions) to test instead of an existing automation."
+        },
+        "days": {
+          "name": "Days",
+          "description": "How many days back from 'end' (ignored when 'start' is set)."
+        },
+        "start": {
+          "name": "Start",
+          "description": "Start of the window (local time)."
+        },
+        "end": {
+          "name": "End",
+          "description": "End of the window (local time). Defaults to now."
+        },
+        "include_runs": {
+          "name": "Include runs",
+          "description": "Include full per-run details with condition traces."
+        },
+        "max_runs": {
+          "name": "Max runs",
+          "description": "Limit the number of runs returned."
+        }
+      }
+    },
+    "compare": {
+      "name": "Compare automations",
+      "description": "Backtest two versions over the same window and show which runs only happen in one of them.",
+      "fields": {
+        "automation": {
+          "name": "Automation",
+          "description": "Current automation (version A)."
+        },
+        "config": {
+          "name": "Configuration",
+          "description": "Version A as YAML, instead of an existing automation."
+        },
+        "config_b": {
+          "name": "Version B",
+          "description": "The edited automation YAML to compare against."
+        },
+        "days": {
+          "name": "Days",
+          "description": "How many days back from 'end' (ignored when 'start' is set)."
+        },
+        "start": {
+          "name": "Start",
+          "description": "Start of the window (local time)."
+        },
+        "end": {
+          "name": "End",
+          "description": "End of the window (local time). Defaults to now."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Automation Backtest",
+        "description": "Aggiunge le azioni 'Backtest automazione' e 'Confronta automazioni'. Non viene mai eseguito nulla."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Automation Backtest è già configurato."
+    }
+  },
+  "services": {
+    "run": {
+      "name": "Backtest automazione",
+      "description": "Rigioca un'automazione sullo storico registrato e mostra quando sarebbe partita e, in caso contrario, quale condizione l'ha bloccata. Le azioni non vengono mai eseguite.",
+      "fields": {
+        "automation": {
+          "name": "Automazione",
+          "description": "Automazione esistente da testare."
+        },
+        "config": {
+          "name": "Configurazione",
+          "description": "YAML dell'automazione (trigger + condizioni) da testare al posto di una esistente."
+        },
+        "days": {
+          "name": "Giorni",
+          "description": "Quanti giorni indietro rispetto a 'fine' (ignorato se è impostato 'inizio')."
+        },
+        "start": {
+          "name": "Inizio",
+          "description": "Inizio della finestra (ora locale)."
+        },
+        "end": {
+          "name": "Fine",
+          "description": "Fine della finestra (ora locale). Predefinito: adesso."
+        },
+        "include_runs": {
+          "name": "Includi esecuzioni",
+          "description": "Includi il dettaglio di ogni esecuzione con il trace delle condizioni."
+        },
+        "max_runs": {
+          "name": "Massimo esecuzioni",
+          "description": "Limita il numero di esecuzioni restituite."
+        }
+      }
+    },
+    "compare": {
+      "name": "Confronta automazioni",
+      "description": "Fa il backtest di due versioni sulla stessa finestra e mostra le esecuzioni presenti solo in una delle due.",
+      "fields": {
+        "automation": {
+          "name": "Automazione",
+          "description": "Automazione attuale (versione A)."
+        },
+        "config": {
+          "name": "Configurazione",
+          "description": "Versione A in YAML, al posto di un'automazione esistente."
+        },
+        "config_b": {
+          "name": "Versione B",
+          "description": "Lo YAML modificato da confrontare."
+        },
+        "days": {
+          "name": "Giorni",
+          "description": "Quanti giorni indietro rispetto a 'fine' (ignorato se è impostato 'inizio')."
+        },
+        "start": {
+          "name": "Inizio",
+          "description": "Inizio della finestra (ora locale)."
+        },
+        "end": {
+          "name": "Fine",
+          "description": "Fine della finestra (ora locale). Predefinito: adesso."
+        }
+      }
+    }
+  }
+}

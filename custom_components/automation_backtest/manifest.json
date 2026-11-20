@@ -1,0 +1,14 @@
+{
+  "domain": "automation_backtest",
+  "name": "Automation Backtest",
+  "codeowners": ["@Thonno"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/Thonno/ha-automation-backtest",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/Thonno/ha-automation-backtest/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
