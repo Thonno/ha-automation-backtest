@@ -36,7 +36,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         sidebar_title="Backtest",
         sidebar_icon="mdi:history",
         require_admin=True,
-        config={},
+        config={"version": integration.version},
     )
 
 
