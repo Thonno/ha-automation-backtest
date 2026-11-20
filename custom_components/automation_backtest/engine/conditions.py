@@ -95,6 +95,10 @@ def evaluate(raw: Any, ctx: EvalContext, path: str) -> tuple[bool | None, list[C
         if kind in ("and", "or", "not"):
             return _logical(kind, cond, ctx, path)
         handler = _HANDLERS.get(kind)
+        if handler is None and isinstance(kind, str) and "." in kind:
+            from .purpose import evaluate_purpose_condition  # local import: avoids a cycle
+
+            handler = evaluate_purpose_condition
         if handler is None:
             raise UnsupportedFeature(f"Condition type '{kind}' is not supported yet")
         result, detail = handler(cond, ctx)

@@ -239,6 +239,23 @@ class AutomationBacktestPanel extends HTMLElement {
     if (first) this._init();
   }
 
+  // Window listeners only while this instance is on screen: HA may create a new
+  // panel element, and stale ones must not react (e.g. steal an editor draft).
+  _listen(type, fn) {
+    this._winListeners = this._winListeners || [];
+    this._winListeners.push([type, fn]);
+    if (this.isConnected) window.addEventListener(type, fn);
+  }
+
+  connectedCallback() {
+    for (const [type, fn] of this._winListeners || []) window.addEventListener(type, fn);
+    if (this._root) setTimeout(() => this._fromUrl(), 0);
+  }
+
+  disconnectedCallback() {
+    for (const [type, fn] of this._winListeners || []) window.removeEventListener(type, fn);
+  }
+
   _applyTheme() {
     const ha = this._hass?.themes?.darkMode;
     const dark = typeof ha === "boolean" ? ha : !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
@@ -323,9 +340,8 @@ class AutomationBacktestPanel extends HTMLElement {
       if (e.target.closest(".chart")) this._setView(null);
     });
     this._bindDrag();
-    window.addEventListener("resize", () => this._renderChartOnly());
-
-    window.addEventListener("location-changed", () => {
+    this._listen("resize", () => this._renderChartOnly());
+    this._listen("location-changed", () => {
       if (window.location.pathname.startsWith("/automation-backtest")) setTimeout(() => this._fromUrl(), 0);
     });
     this._renderAll();
@@ -333,6 +349,7 @@ class AutomationBacktestPanel extends HTMLElement {
   }
 
   _fromUrl() {
+    if (!this.isConnected) return;
     // Deep links: ?automation=automation.x  (from the ⋮ menu of the list)
     //             ?automation=automation.x&draft=1 / ?draft=1  (from the editor, unsaved config)
     const search = window.location.search;
@@ -826,7 +843,7 @@ class AutomationBacktestPanel extends HTMLElement {
       this._drag = { svg, box, x0: px, x1: px };
       e.preventDefault();
     });
-    window.addEventListener("mousemove", (e) => {
+    this._listen("mousemove", (e) => {
       if (!this._drag) return;
       const d = this._drag;
       const g = this._chartGeom;
@@ -836,7 +853,7 @@ class AutomationBacktestPanel extends HTMLElement {
       brush.setAttribute("x", Math.min(d.x0, d.x1));
       brush.setAttribute("width", Math.abs(d.x1 - d.x0));
     });
-    window.addEventListener("mouseup", () => {
+    this._listen("mouseup", () => {
       if (!this._drag) return;
       const d = this._drag;
       this._drag = null;
@@ -1011,7 +1028,7 @@ class AutomationBacktestPanel extends HTMLElement {
       s.error = err?.message || String(err);
     }
     this._renderAll();
-    if (config) this._runBacktest();
+    if (config || automation) this._runBacktest();
   }
 
   async _loadSaved() {

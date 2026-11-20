@@ -14,7 +14,7 @@ def as_list(value: Any) -> list:
     """Return value as a list (None -> [])."""
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, (list, tuple, set, frozenset)):
         return list(value)
     return [value]
 

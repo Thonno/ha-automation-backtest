@@ -9,7 +9,7 @@ _ENTITY_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 _QUOTED_RE = re.compile(r"['\"]([a-z_][a-z0-9_]*\.[a-z0-9_]+)['\"]")
 _DOTTED_RE = re.compile(r"states\.([a-z_][a-z0-9_]*)\.([a-z0-9_]+)")
 
-_ENTITY_KEYS = {"entity_id", "above", "below", "at", "after", "before", "state", "zone"}
+_ENTITY_KEYS = {"entity_id", "above", "below", "at", "after", "before", "state", "zone", "_entities", "entity"}
 _SKIP_KEYS = {"actions", "action", "sequence"}  # actions are never executed
 
 

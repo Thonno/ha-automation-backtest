@@ -450,3 +450,85 @@ def test_compare_reports_shifted_runs(make_history):
     assert diff["summary"]["shifted"] == 1
     assert diff["summary"]["only_a"] == diff["summary"]["only_b"] == 0
     assert diff["shifted"][0]["delta_seconds"] == -300
+
+
+# --- purpose-specific triggers & conditions (HA 2025.12+) ------------------------------
+
+
+def test_vacuum_started_cleaning_and_is_docked(make_history):
+    history = make_history([
+        ("vacuum.bogdana", "2026-11-09 23:00", "docked"),
+        ("vacuum.bogdana", "2026-11-10 10:00", "cleaning"),
+        ("vacuum.bogdana", "2026-11-10 10:40", "returning"),
+        ("vacuum.bogdana", "2026-11-10 10:45", "docked"),
+        ("vacuum.bogdana", "2026-11-10 12:00", "unavailable"),
+        ("vacuum.bogdana", "2026-11-10 12:01", "cleaning"),   # from unavailable: ignored
+    ])
+    trig = {"triggers": [{"trigger": "vacuum.started_cleaning", "target": {"entity_id": "vacuum.bogdana"}}]}
+    assert statuses(backtest(trig, history, START, END)) == [("10:00", EXECUTED)]
+    cond = {
+        "triggers": [{"trigger": "time", "at": ["09:00:00", "10:30:00"]}],
+        "conditions": [{"condition": "vacuum.is_docked", "target": {"entity_id": "vacuum.bogdana"}}],
+    }
+    assert statuses(backtest(cond, history, START, END)) == [("09:00", EXECUTED), ("10:30", BLOCKED)]
+
+
+def test_media_player_volume_changed_and_crossed(make_history):
+    history = make_history([
+        ("media_player.tv", "2026-11-09 23:00", "on", {"volume_level": 0.30}),
+        ("media_player.tv", "2026-11-10 20:00", "on", {"volume_level": 0.65}),
+        ("media_player.tv", "2026-11-10 20:01", "on", {"volume_level": 0.70}),
+        ("media_player.tv", "2026-11-10 21:00", "on", {"volume_level": 0.20}),
+        ("media_player.tv", "2026-11-10 22:00", "on", {"volume_level": 0.80}),
+    ])
+    target = {"entity_id": "media_player.tv"}
+    changed = {"triggers": [{"trigger": "media_player.volume_changed", "target": target,
+                             "options": {"threshold": {"type": "above", "value": {"number": 60}}}}]}
+    crossed = {"triggers": [{"trigger": "media_player.volume_crossed_threshold", "target": target,
+                             "options": {"threshold": {"type": "above", "value": {"number": 60}}}}]}
+    anyc = {"triggers": [{"trigger": "media_player.volume_changed", "target": target,
+                          "options": {"threshold": {"type": "any"}}}]}
+    assert [r.time.strftime("%H:%M") for r in backtest(changed, history, START, END).runs] == ["20:00", "20:01", "22:00"]
+    assert [r.time.strftime("%H:%M") for r in backtest(crossed, history, START, END).runs] == ["20:00", "22:00"]
+    assert len(backtest(anyc, history, START, END).runs) == 4
+
+
+def test_purpose_behavior_all_and_for(make_history):
+    history = make_history([
+        ("light.a", "2026-11-09 23:00", "off"),
+        ("light.b", "2026-11-09 23:00", "off"),
+        ("light.a", "2026-11-10 08:00", "on"),
+        ("light.b", "2026-11-10 08:30", "on"),   # all on at 08:30
+        ("light.a", "2026-11-10 09:00", "off"),
+        ("light.a", "2026-11-10 20:00", "on"),   # held 2 min -> 20:02 (each + for)
+    ])
+    all_on = {"triggers": [{"trigger": "light.turned_on", "_entities": ["light.a", "light.b"],
+                            "options": {"behavior": "all"}}]}
+    assert [r.time.strftime("%H:%M") for r in backtest(all_on, history, START, END).runs] == ["08:30", "20:00"]
+    held = {"triggers": [{"trigger": "light.turned_on", "_entities": ["light.a"], "options": {"for": "00:02:00"}}]}
+    assert [r.time.strftime("%H:%M") for r in backtest(held, history, START, END).runs] == ["08:02", "20:02"]
+
+
+def test_door_opened_on_binary_sensor_and_unsupported_sun(make_history):
+    history = make_history([
+        ("binary_sensor.front", "2026-11-09 23:00", "off", {"device_class": "door"}),
+        ("binary_sensor.front", "2026-11-10 07:00", "on", {"device_class": "door"}),
+    ])
+    door = {"triggers": [{"trigger": "door.opened", "_entities": ["binary_sensor.front"]}]}
+    assert statuses(backtest(door, history, START, END)) == [("07:00", EXECUTED)]
+    sun = {"triggers": [{"trigger": "sun.sunset", "target": {}}]}
+    result = backtest(sun, history, START, END)
+    assert result.runs == [] and "sun position" in result.unsupported_triggers[0]["reason"]
+
+
+def test_media_player_is_volume_condition(make_history):
+    history = make_history([
+        ("media_player.tv", "2026-11-09 23:00", "on", {"volume_level": 0.5}),
+        ("media_player.tv", "2026-11-10 12:00", "on", {"volume_level": 0.1}),
+    ])
+    config = {
+        "triggers": [{"trigger": "time", "at": ["10:00:00", "13:00:00"]}],
+        "conditions": [{"condition": "media_player.is_volume", "target": {"entity_id": "media_player.tv"},
+                        "options": {"threshold": {"type": "below", "value": {"number": 35}}}}],
+    }
+    assert statuses(backtest(config, history, START, END)) == [("10:00", BLOCKED), ("13:00", EXECUTED)]

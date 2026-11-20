@@ -17,6 +17,7 @@ from typing import Any
 from .conditions import WEEKDAYS, EvalContext, numeric_matches
 from .devices import device_trigger_to_state
 from .history import StateChange, StateSnapshot
+from .purpose import is_purpose, make_purpose_trigger
 from .templates import template_uses_now
 from .util import (
     UnsupportedFeature,
@@ -478,6 +479,8 @@ def build_trigger(raw: dict[str, Any], index: int) -> BaseTrigger:
         raw = device_trigger_to_state(raw)
         platform = raw["trigger"]
     cls = _TRIGGERS.get(platform)
+    if cls is None and is_purpose(platform):
+        return make_purpose_trigger(BaseTrigger, raw, index)
     if cls is None:
         raise UnsupportedFeature(
             f"Trigger '{platform}' cannot be replayed from state history (yet)"
