@@ -9,6 +9,12 @@ from .simulator import EXECUTED, BacktestResult, Run
 from .util import iso
 
 TOLERANCE = timedelta(seconds=1)
+SHIFT_WINDOW = timedelta(hours=6)
+
+
+def _origin(run: Run) -> str:
+    """The event that caused the run, without the 'held for' suffix of for: triggers."""
+    return run.description.split(" (held ")[0]
 
 
 def _executed(result: BacktestResult) -> list[Run]:
@@ -16,7 +22,7 @@ def _executed(result: BacktestResult) -> list[Run]:
 
 
 def compare(a: BacktestResult, b: BacktestResult) -> dict[str, Any]:
-    """Which executions happen only in A, only in B, or in both."""
+    """Which executions happen only in A, only in B, in both, or in both but at another time."""
     tz = a.tz
     runs_a, runs_b = _executed(a), _executed(b)
     used_b: set[int] = set()
@@ -34,6 +40,21 @@ def compare(a: BacktestResult, b: BacktestResult) -> dict[str, Any]:
             both.append(run)
     only_b = [r for i, r in enumerate(runs_b) if i not in used_b]
 
+    # Same originating event, different time (e.g. a changed `for:`): report as shifted.
+    shifted: list[tuple[Run, Run]] = []
+    remaining_b = list(only_b)
+    for run in list(only_a):
+        candidates = [
+            other for other in remaining_b
+            if _origin(other) == _origin(run) and abs(other.time - run.time) <= SHIFT_WINDOW
+        ]
+        if candidates:
+            best = min(candidates, key=lambda o: abs(o.time - run.time))
+            remaining_b.remove(best)
+            only_a.remove(run)
+            shifted.append((run, best))
+    only_b = remaining_b
+
     def brief(run: Run) -> dict[str, Any]:
         return {"time": iso(run.time.astimezone(tz)), "trigger": run.description}
 
@@ -44,7 +65,17 @@ def compare(a: BacktestResult, b: BacktestResult) -> dict[str, Any]:
             "both": len(both),
             "only_a": len(only_a),
             "only_b": len(only_b),
+            "shifted": len(shifted),
         },
         "only_a": [brief(r) for r in only_a],
         "only_b": [brief(r) for r in only_b],
+        "shifted": [
+            {
+                "a_time": iso(ra.time.astimezone(tz)),
+                "b_time": iso(rb.time.astimezone(tz)),
+                "delta_seconds": int((rb.time - ra.time).total_seconds()),
+                "trigger": _origin(ra),
+            }
+            for ra, rb in shifted
+        ],
     }

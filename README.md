@@ -30,11 +30,18 @@ After installing, a **Backtest** entry appears in the sidebar (admins only).
   (grey bands). Drag on the chart to zoom, double-click to reset.
 - Click a run on the chart or in the list to see the trigger and the full condition trace,
   with the condition that blocked it highlighted.
-- Tick **Edit YAML** to test a draft without saving it.
-- Choose **＋ New automation (draft)** to write triggers and conditions of an automation you
-  have not created yet and see when it *would have run if it had existed*.
-- The **Compare** tab replays the saved automation (A) and your edit (B) over the same
-  period and rings the runs that only happen in one of them.
+- Tick **Try a change (draft)** to edit the triggers and conditions and backtest the result
+  without saving anything. The draft uses **Home Assistant's own visual automation blocks**
+  (same entity pickers, durations, states as the real editor), or YAML with syntax highlighting
+  and entity autocompletion. If a future HA version changes those blocks, the panel falls
+  back to YAML automatically.
+- Choose **＋ New automation (draft)** to build an automation you have not created yet and
+  see when it *would have run if it had existed*.
+- **Open in the HA editor** jumps to the real automation editor; from there,
+  ⋮ → Backtest brings the on-screen (unsaved) configuration back to the panel.
+- The **Compare** tab replays the saved automation (A) and your draft (B) over the same
+  period and rings the runs that only happen in one of them. Runs caused by the same event
+  but at a different time (e.g. after changing a `for:`) are listed as **shifted**, with the delta.
 
 ![Compare tab](docs/compare.png)
 
@@ -126,7 +133,7 @@ The response lists executions that happen **only in A** and **only in B**.
 
 | | Supported | Not yet |
 |---|---|---|
-| **Triggers** | `state` (from/to/not_from/not_to/attribute/for), `numeric_state` (above/below/attribute/value_template/for, crossing semantics), `time` (fixed times, `input_datetime`), `time_pattern`, `template` (incl. `for`, `now()` re-rendered every minute), `device` triggers that map to a state or attribute (turned on/off, motion, open/close, lock, vacuum, climate HVAC mode, sensor/humidity/temperature thresholds…) | `event`, `mqtt`, `webhook`, `sun`, `zone`, `homeassistant`, `calendar`, `tag`, button/remote device triggers, `conversation` |
+| **Triggers** | `state` (from/to/not_from/not_to/attribute/for), `numeric_state` (above/below/attribute/value_template/for, crossing semantics), `time` (fixed times, `input_datetime`, `weekday`), `time_pattern`, `template` (incl. `for`, `now()` re-rendered every minute), `device` triggers that map to a state or attribute (turned on/off, motion, open/close, lock, vacuum, climate HVAC mode, sensor/humidity/temperature thresholds…) | `event`, `mqtt`, `webhook`, `sun`, `zone`, `homeassistant`, `calendar`, `tag`, button/remote device triggers, `conversation` |
 | **Conditions** | `state` (incl. `for`, `match: any`, attribute), `numeric_state`, `time` (after/before/weekday, across midnight), `template`, `trigger` (id), `and`/`or`/`not` (incl. shorthand), `device` conditions that map to a state or attribute (on/off, open/closed, humidifier mode, climate HVAC/preset mode, vacuum docked/cleaning, sensor thresholds…) | `sun`, `zone` |
 | **Templates** | `states()`, `states.domain.object`, `is_state`, `state_attr`, `is_state_attr`, `has_value`, `now()`, `today_at`, `as_timestamp`, `as_datetime`, `float/int/bool` with defaults, `iif`, `trigger.*` | everything else in HA's template API |
 

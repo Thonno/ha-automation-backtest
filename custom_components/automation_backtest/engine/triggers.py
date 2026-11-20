@@ -14,7 +14,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 from itertools import product
 from typing import Any
 
-from .conditions import EvalContext, numeric_matches
+from .conditions import WEEKDAYS, EvalContext, numeric_matches
 from .devices import device_trigger_to_state
 from .history import StateChange, StateSnapshot
 from .templates import template_uses_now
@@ -308,6 +308,7 @@ class TimeTrigger(BaseTrigger):
             raise UnsupportedFeature("Time trigger without 'at'")
         self._times: list[time] = []
         self._entity_times: list[str] = []
+        self.weekdays = [str(d) for d in as_list(config.get("weekday"))]
         for item in self.at:
             if isinstance(item, dict):
                 raise UnsupportedFeature("Time trigger with entity offset is not supported yet")
@@ -330,6 +331,8 @@ class TimeTrigger(BaseTrigger):
     def scheduled_times(self, start: datetime, end: datetime, tz: tzinfo) -> list[datetime]:
         out = []
         for day in _days(start, end, tz):
+            if self.weekdays and WEEKDAYS[day.weekday()] not in self.weekdays:
+                continue
             for t in self._times:
                 when = datetime.combine(day, t, tzinfo=tz)
                 if start < when <= end:

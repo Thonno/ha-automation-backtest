@@ -27,12 +27,30 @@ async def automation_config(hass: HomeAssistant, data: dict[str, Any]) -> dict[s
     entity_id = data.get(ATTR_AUTOMATION)
     if not entity_id:
         raise ServiceValidationError("Provide either 'automation' or 'config'")
+    return resolve_registry_ids(hass, raw_automation_config(hass, entity_id))
+
+
+def raw_automation_config(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    """The automation config exactly as stored (registry ids kept, for the HA editor)."""
     component = hass.data.get("automation")
     entity = component.get_entity(entity_id) if component else None
     raw = getattr(entity, "raw_config", None) if entity else None
     if not raw:
         raise ServiceValidationError(f"Could not read the configuration of {entity_id}")
-    return resolve_registry_ids(hass, dict(raw))
+    return dict(raw)
+
+
+def editable_part(config: dict[str, Any]) -> dict[str, list]:
+    """Just triggers and conditions, normalised to the plural keys."""
+    def as_list(value: Any) -> list:
+        if value is None:
+            return []
+        return list(value) if isinstance(value, list) else [value]
+
+    return {
+        "triggers": as_list(config.get("triggers", config.get("trigger"))),
+        "conditions": as_list(config.get("conditions", config.get("condition"))),
+    }
 
 
 def resolve_registry_ids(hass: HomeAssistant, config: Any) -> Any:

@@ -4,6 +4,7 @@ automation_backtest/config   -> the automation's trigger/condition config as YAM
 automation_backtest/run      -> full backtest (runs + traces + entities + thresholds)
 automation_backtest/compare  -> A vs B, with the runs of both for the chart
 automation_backtest/to_yaml  -> editor config (unsaved draft) -> editable YAML
+automation_backtest/from_yaml -> YAML -> triggers/conditions objects (visual editor)
 YAML is parsed server-side so the panel needs no YAML library.
 """
 
@@ -53,6 +54,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_run)
     websocket_api.async_register_command(hass, ws_compare)
     websocket_api.async_register_command(hass, ws_to_yaml)
+    websocket_api.async_register_command(hass, ws_from_yaml)
     hass.data[_REGISTERED] = True
 
 
@@ -84,7 +86,11 @@ def _yaml_to_config(text: str) -> dict[str, Any]:
     return parsed
 
 
-async def _source_config(hass: HomeAssistant, msg: dict[str, Any], yaml_key: str) -> dict[str, Any]:
+async def _source_config(
+    hass: HomeAssistant, msg: dict[str, Any], yaml_key: str, obj_key: str = "config"
+) -> dict[str, Any]:
+    if msg.get(obj_key):
+        return runner.resolve_registry_ids(hass, msg[obj_key])
     if msg.get(yaml_key):
         return runner.resolve_registry_ids(hass, _yaml_to_config(msg[yaml_key]))
     return await runner.automation_config(hass, {ATTR_AUTOMATION: msg.get("automation")})
@@ -108,13 +114,22 @@ def _error(connection, msg_id: int, err: Exception) -> None:
 @websocket_api.async_response
 async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     try:
-        config = await runner.automation_config(hass, {ATTR_AUTOMATION: msg["automation"]})
+        raw = runner.raw_automation_config(hass, msg["automation"])
     except HomeAssistantError as err:
         _error(connection, msg["id"], err)
         return
-    editable = {k: config[k] for k in _EDITABLE_KEYS if k in config}
+    resolved = runner.resolve_registry_ids(hass, raw)
+    editable = {k: resolved[k] for k in _EDITABLE_KEYS if k in resolved}
     connection.send_result(
-        msg["id"], {"alias": config.get("alias"), "yaml": dump(editable), "mode": config.get("mode")}
+        msg["id"],
+        {
+            "alias": raw.get("alias"),
+            "id": raw.get("id"),
+            "mode": raw.get("mode"),
+            "yaml": dump(editable),
+            # Untouched copy for the visual editor (device automations keep registry ids).
+            "config": runner.editable_part(raw),
+        },
     )
 
 
@@ -123,6 +138,7 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         vol.Required("type"): f"{DOMAIN}/run",
         vol.Exclusive("automation", "source"): str,
         vol.Exclusive("config_yaml", "source"): str,
+        vol.Exclusive("config", "source"): dict,
         **_PERIOD,
     }
 )
@@ -144,7 +160,8 @@ async def ws_run(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         vol.Required("type"): f"{DOMAIN}/compare",
         vol.Exclusive("automation", "a"): str,
         vol.Exclusive("config_a_yaml", "a"): str,
-        vol.Required("config_b_yaml"): str,
+        vol.Exclusive("config_b_yaml", "b"): str,
+        vol.Exclusive("config_b", "b"): dict,
         **_PERIOD,
     }
 )
@@ -152,8 +169,10 @@ async def ws_run(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
 @websocket_api.async_response
 async def ws_compare(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     try:
-        config_a = await _source_config(hass, msg, "config_a_yaml")
-        config_b = runner.resolve_registry_ids(hass, _yaml_to_config(msg["config_b_yaml"]))
+        config_a = await _source_config(hass, msg, "config_a_yaml", "config_a")
+        if not msg.get("config_b") and not msg.get("config_b_yaml"):
+            raise HomeAssistantError("Version B is missing")
+        config_b = await _source_config(hass, msg, "config_b_yaml", "config_b")
         start, end, tz = runner.period(hass, _period_data(msg))
         result_a = await runner.run(hass, config_a, start, end, tz)
         result_b = await runner.run(hass, config_b, start, end, tz)
@@ -180,6 +199,21 @@ async def ws_compare(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
 @callback
 def ws_to_yaml(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     """Turn an editor config (possibly unsaved) into the editable YAML."""
-    config = msg["config"] or {}
+    config = runner.resolve_registry_ids(hass, msg["config"] or {})
     editable = {k: config[k] for k in _EDITABLE_KEYS if k in config}
     connection.send_result(msg["id"], {"yaml": dump(editable) if editable else ""})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/from_yaml", vol.Required("yaml"): str}
+)
+@websocket_api.require_admin
+@callback
+def ws_from_yaml(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """YAML text -> triggers/conditions objects, for switching to the visual editor."""
+    try:
+        config = _yaml_to_config(msg["yaml"]) if msg["yaml"].strip() else {}
+    except HomeAssistantError as err:
+        _error(connection, msg["id"], err)
+        return
+    connection.send_result(msg["id"], {"config": runner.editable_part(config)})

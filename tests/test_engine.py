@@ -244,7 +244,7 @@ def test_compare_threshold_change(make_history):
     v1 = {"triggers": [{"trigger": "numeric_state", "entity_id": "sensor.temp", "above": 20}]}
     v2 = {"triggers": [{"trigger": "numeric_state", "entity_id": "sensor.temp", "above": 22}]}
     diff = compare(backtest(v1, history, START, END), backtest(v2, history, START, END))
-    assert diff["summary"] == {"a_executed": 2, "b_executed": 1, "both": 1, "only_a": 1, "only_b": 0}
+    assert diff["summary"] == {"a_executed": 2, "b_executed": 1, "both": 1, "only_a": 1, "only_b": 0, "shifted": 0}
     assert diff["only_a"][0]["time"].startswith("2026-11-10T01:00")
 
 
@@ -429,3 +429,24 @@ def test_extract_thresholds():
         {"entity_id": "sensor.t2", "kind": "below", "value": 19.5},
         {"entity_id": "sensor.v", "kind": "above", "value": 25.0},
     ]
+
+
+def test_time_trigger_weekday_filter(make_history):
+    history = make_history([("sun.sun", "2026-11-09 00:00", "x")])
+    # 2026-11-10 is a Tuesday, 2026-11-11 a Wednesday
+    config = {"triggers": [{"trigger": "time", "at": "07:00:00", "weekday": ["wed", "sat"]}]}
+    result = backtest(config, history, ts("2026-11-10 00:00"), ts("2026-11-12 00:00"))
+    assert [r.time.strftime("%d %H:%M") for r in result.runs] == ["11 07:00"]
+
+
+def test_compare_reports_shifted_runs(make_history):
+    history = make_history([
+        ("person.a", "2026-11-09 23:00", "home"),
+        ("person.a", "2026-11-10 18:17:52", "not_home"),
+    ])
+    a = {"triggers": [{"trigger": "state", "entity_id": "person.a", "to": "not_home", "for": {"minutes": 10}}]}
+    b = {"triggers": [{"trigger": "state", "entity_id": "person.a", "to": "not_home", "for": {"minutes": 5}}]}
+    diff = compare(backtest(a, history, START, END), backtest(b, history, START, END))
+    assert diff["summary"]["shifted"] == 1
+    assert diff["summary"]["only_a"] == diff["summary"]["only_b"] == 0
+    assert diff["shifted"][0]["delta_seconds"] == -300

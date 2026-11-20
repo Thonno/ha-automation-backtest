@@ -10,7 +10,7 @@ const STR = {
     title: "Automation Backtest",
     subtitle: "Replay automations on your history",
     newDraft: "＋ New automation (draft)",
-    newHint: "Write the triggers and conditions of an automation you have not created yet: you will see when it would have run if it had existed.",
+    newHint: "Build the triggers and conditions of an automation you have not created yet: you will see when it would have run if it had existed.",
     draftFromEditor: "Unsaved changes from the automation editor",
     compareNeedsSaved: "Compare needs a saved automation to use as version A.",
     automation: "Automation",
@@ -23,8 +23,17 @@ const STR = {
     running: "Replaying history…",
     tabRun: "Backtest",
     tabCompare: "Compare",
-    editYaml: "Edit YAML (test a draft)",
+    editYaml: "Try a change (draft)",
     resetYaml: "Reset to saved",
+    visual: "Visual",
+    yamlMode: "YAML",
+    when: "When",
+    andIf: "And if",
+    openInHa: "Open in the HA editor",
+    createInHa: "Create in the HA editor",
+    unsaved: "Unsaved draft",
+    loadingEditor: "Loading the editor…",
+    visualUnavailable: "The visual editor is not available in this Home Assistant version: using YAML.",
     draft: "Testing an unsaved draft",
     triggered: "Triggered",
     executed: "Executed",
@@ -54,6 +63,10 @@ const STR = {
     both: "In both",
     onlyA: "Only A",
     onlyB: "Only B",
+    shifted: "Shifted",
+    shiftedHint: "Same event, different time",
+    earlier: "earlier",
+    later: "later",
     noDiff: "No difference: both versions run at exactly the same moments.",
     restartBand: "Home Assistant was restarting: automations were not listening",
     dayShort: "d",
@@ -65,7 +78,7 @@ const STR = {
     title: "Automation Backtest",
     subtitle: "Rigioca le automazioni sul tuo storico",
     newDraft: "＋ Nuova automazione (bozza)",
-    newHint: "Scrivi trigger e condizioni di un'automazione che non hai ancora creato: vedrai quando sarebbe partita se fosse esistita.",
+    newHint: "Componi trigger e condizioni di un'automazione che non hai ancora creato: vedrai quando sarebbe partita se fosse esistita.",
     draftFromEditor: "Modifiche non salvate dall'editor dell'automazione",
     compareNeedsSaved: "Il confronto richiede un'automazione salvata da usare come versione A.",
     automation: "Automazione",
@@ -78,8 +91,17 @@ const STR = {
     running: "Rigioco lo storico…",
     tabRun: "Backtest",
     tabCompare: "Confronta",
-    editYaml: "Modifica YAML (prova una bozza)",
+    editYaml: "Prova una modifica (bozza)",
     resetYaml: "Ripristina salvata",
+    visual: "Visuale",
+    yamlMode: "YAML",
+    when: "Quando",
+    andIf: "E se",
+    openInHa: "Apri nell'editor di HA",
+    createInHa: "Crea nell'editor di HA",
+    unsaved: "Bozza non salvata",
+    loadingEditor: "Carico l'editor…",
+    visualUnavailable: "L'editor visuale non è disponibile in questa versione di Home Assistant: uso lo YAML.",
     draft: "Stai provando una bozza non salvata",
     triggered: "Scattata",
     executed: "Eseguita",
@@ -109,6 +131,10 @@ const STR = {
     both: "In entrambe",
     onlyA: "Solo A",
     onlyB: "Solo B",
+    shifted: "Spostate",
+    shiftedHint: "Stesso evento, orario diverso",
+    earlier: "prima",
+    later: "dopo",
     noDiff: "Nessuna differenza: le due versioni partono esattamente negli stessi momenti.",
     restartBand: "Home Assistant si stava riavviando: le automazioni non erano in ascolto",
     dayShort: "g",
@@ -132,6 +158,25 @@ const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
 const PERIODS = [1, 3, 7, 14];
 const LIST_PAGE = 200;
 const MAX_ENTITY_LANES = 8;
+
+function findDeep(root, selector, depth = 0) {
+  if (!root || depth > 12) return null;
+  const hit = root.querySelector?.(selector);
+  if (hit) return hit;
+  for (const el of root.querySelectorAll?.("*") || []) {
+    if (el.shadowRoot) {
+      const found = findDeep(el.shadowRoot, selector, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+const asList = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+const normalise = (cfg) => ({
+  triggers: asList(cfg?.triggers ?? cfg?.trigger),
+  conditions: asList(cfg?.conditions ?? cfg?.condition),
+});
 
 const esc = (v) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -159,10 +204,14 @@ class AutomationBacktestPanel extends HTMLElement {
       custom: false,
       start: "",
       end: "",
-      yamlMode: false,
-      yaml: "",
-      yamlSaved: "",
-      yamlB: "",
+      saved: null, // {yaml, config, id} of the stored automation
+      editing: false, // a draft is being tried
+      mode: "visual", // visual | yaml
+      draft: null, // {triggers, conditions} (visual source of truth)
+      yaml: "", // yaml source of truth in yaml mode
+      dirty: false,
+      fromEditor: false,
+      visualOk: null, // null = not tried yet
       loading: false,
       error: "",
       result: null,
@@ -182,6 +231,11 @@ class AutomationBacktestPanel extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     this._applyTheme();
+    if (this._vis) {
+      this._vis.tr.hass = hass;
+      this._vis.co.hass = hass;
+    }
+    if (this._code && this._code.tagName !== "TEXTAREA") this._code.hass = hass;
     if (first) this._init();
   }
 
@@ -195,6 +249,10 @@ class AutomationBacktestPanel extends HTMLElement {
   set narrow(value) {
     this._narrow = value;
     if (this._root) this._root.classList.toggle("narrow", !!value);
+    if (this._vis) {
+      this._vis.tr.narrow = !!value;
+      this._vis.co.narrow = !!value;
+    }
   }
 
   set panel(_value) {}
@@ -287,7 +345,7 @@ class AutomationBacktestPanel extends HTMLElement {
     const s = this._s;
     Object.assign(s, {
       tab: "run", result: null, cmp: null, selected: -1, view: null, error: "",
-      yaml: "", yamlSaved: "", yamlB: "", yamlMode: false, fromEditor: false, statusFilter: null,
+      saved: null, editing: false, draft: null, yaml: "", dirty: false, fromEditor: false, statusFilter: null,
     });
     if (params.get("draft")) {
       this._loadDraft(known);
@@ -295,7 +353,7 @@ class AutomationBacktestPanel extends HTMLElement {
     }
     s.automation = known;
     this._renderAll();
-    this._loadYaml().then(() => this._runBacktest());
+    this._loadSaved().then(() => this._runBacktest());
   }
 
   // --- rendering -----------------------------------------------------------
@@ -360,35 +418,48 @@ class AutomationBacktestPanel extends HTMLElement {
     html += s.tab === "run" ? this._runTab() : this._compareTab();
     if (s.loading) html += `<div class="loading"><span class="spinner"></span>${esc(s.tab === "run" ? t.running : t.comparing)}</div>`;
     this._body.innerHTML = html;
+    this._mountEditor();
     this._renderChartOnly();
   }
 
-  _yamlEditor() {
+  _draftEditor(forCompare = false) {
     const t = this._t;
     const s = this._s;
     if (!s.automation) return "";
-    if (s.automation === NEW) {
-      return `<div class="card yaml">
-        <p class="muted hint-p">${esc(t.newHint)}</p>
-        <textarea class="code yaml-a" spellcheck="false">${esc(s.yaml)}</textarea>
-      </div>`;
+    const isNew = s.automation === NEW;
+    const cfgId = s.saved?.id;
+    const haLink = isNew
+      ? `<a class="link" href="/config/automation/edit/new" target="_top">${esc(t.createInHa)} ↗</a>`
+      : cfgId ? `<a class="link" href="/config/automation/edit/${encodeURIComponent(cfgId)}" target="_top">${esc(t.openInHa)} ↗</a>` : "";
+    const open = isNew || forCompare || s.editing;
+    let html = `<div class="card draft">`;
+    if (forCompare) html += `<h3>${esc(t.versionB)}</h3>`;
+    if (isNew) html += `<p class="muted hint-p">${esc(t.newHint)}</p>`;
+    if (s.fromEditor) html += `<div class="badge warn">${esc(t.draftFromEditor)}</div>`;
+    if (!isNew && !forCompare) {
+      html += `<label class="check"><input type="checkbox" class="draft-toggle" ${s.editing ? "checked" : ""}> ${esc(t.editYaml)}</label>`;
     }
-    return `<div class="card yaml">
-      ${s.fromEditor ? `<div class="badge warn">${esc(t.draftFromEditor)}</div>` : ""}
-      <label class="check"><input type="checkbox" class="yaml-toggle" ${s.yamlMode ? "checked" : ""}> ${esc(t.editYaml)}</label>
-      ${s.yamlMode ? `
-        <textarea class="code yaml-a" spellcheck="false">${esc(s.yaml)}</textarea>
-        <div class="row">
-          ${s.yaml !== s.yamlSaved ? `<span class="badge warn">${esc(t.draft)}</span>` : ""}
-          <button class="flat reset-yaml">${esc(t.resetYaml)}</button>
-        </div>` : ""}
-    </div>`;
+    if (open) {
+      html += `<div class="draft-bar">
+        <div class="seg small">
+          <button data-mode="visual" class="${s.mode === "visual" ? "on" : ""}">${esc(t.visual)}</button>
+          <button data-mode="yaml" class="${s.mode === "yaml" ? "on" : ""}">${esc(t.yamlMode)}</button>
+        </div>
+        <span class="badge warn dirty-badge"${s.dirty && !isNew ? "" : " hidden"}>${esc(t.unsaved)}</span>
+        <span class="grow"></span>
+        ${!isNew ? `<button class="flat reset-draft">${esc(t.resetYaml)}</button>` : ""}
+        ${haLink}
+      </div>
+      ${s.visualOk === false && s.mode === "yaml" ? `<div class="banner info">${esc(t.visualUnavailable)}</div>` : ""}
+      <div class="ve-slot"><div class="empty">${esc(t.loadingEditor)}</div></div>`;
+    }
+    return html + `</div>`;
   }
 
   _runTab() {
     const s = this._s;
     const t = this._t;
-    let html = this._yamlEditor();
+    let html = this._draftEditor(false);
     const r = s.result;
     if (!r) return html;
     html += this._summary(r);
@@ -502,8 +573,8 @@ class AutomationBacktestPanel extends HTMLElement {
     if (!s.automation) return `<div class="card empty">${esc(t.selectFirst)}</div>`;
     if (s.automation === NEW) return `<div class="card empty">${esc(t.compareNeedsSaved)}</div>`;
     let html = `<div class="ab">
-      <div class="card"><h3>${esc(t.versionA)}</h3><textarea class="code" readonly>${esc(s.yamlSaved)}</textarea></div>
-      <div class="card"><h3>${esc(t.versionB)}</h3><textarea class="code yaml-b" spellcheck="false">${esc(s.yamlB)}</textarea></div>
+      <div class="card"><h3>${esc(t.versionA)}</h3><textarea class="code" readonly>${esc(s.saved?.yaml || "")}</textarea></div>
+      ${this._draftEditor(true)}
     </div>`;
     const c = s.cmp;
     if (!c) return html;
@@ -513,13 +584,14 @@ class AutomationBacktestPanel extends HTMLElement {
       <span class="chip plain"><b>${d.both}</b> ${esc(t.both)}</span>
       <span class="chip only-a"><b>${d.only_a}</b> ${esc(t.onlyA)}</span>
       <span class="chip only-b"><b>${d.only_b}</b> ${esc(t.onlyB)}</span>
+      ${d.shifted ? `<span class="chip shifted"><b>${d.shifted}</b> ${esc(t.shifted)}</span>` : ""}
     </div>`;
     html += this._notices(c.a) + this._notices(c.b);
     html += `<div class="card chart-card">
       <div class="row between"><span class="hint">${esc(t.zoomHint)}</span>
       ${s.view ? `<button class="flat reset-zoom">${esc(t.resetZoom)}</button>` : ""}</div>
       <div class="chart"></div></div>`;
-    if (!d.only_a && !d.only_b) {
+    if (!d.only_a && !d.only_b && !d.shifted) {
       html += `<div class="card empty">${esc(t.noDiff)}</div>`;
     } else {
       const list = (items, cls) =>
@@ -528,8 +600,22 @@ class AutomationBacktestPanel extends HTMLElement {
               .map((x) => `<tr><td><span class="dot ${cls}">●</span></td><td class="time">${esc(this._fmtFull(Date.parse(x.time)))}</td><td class="desc">${esc(x.trigger)}</td></tr>`)
               .join("")}</tbody></table>`
           : `<div class="empty">—</div>`;
-      html += `<div class="split"><div class="card list"><h3>${esc(t.onlyA)}</h3>${list(c.diff.only_a, "only-a")}</div>
-        <div class="card list"><h3>${esc(t.onlyB)}</h3>${list(c.diff.only_b, "only-b")}</div></div>`;
+      if (c.diff.shifted?.length) {
+        const fmtDelta = (sec) => {
+          const a = Math.abs(sec);
+          const txt = a >= 3600 ? `${Math.floor(a / 3600)} h ${Math.round((a % 3600) / 60)} min` : a >= 60 ? `${Math.round(a / 60)} min` : `${a} s`;
+          return `${txt} ${sec < 0 ? t.earlier : t.later}`;
+        };
+        html += `<div class="card list"><h3>${esc(t.shifted)} <span class="muted hint">· ${esc(t.shiftedHint)}</span></h3><table><tbody>${c.diff.shifted
+          .map((x) => `<tr><td><span class="dot shifted">↔</span></td>
+            <td class="time">A ${esc(this._fmtFull(Date.parse(x.a_time)))}<br>B ${esc(this._fmtFull(Date.parse(x.b_time)))}</td>
+            <td class="desc">${esc(x.trigger)}<div class="why">B ${esc(fmtDelta(x.delta_seconds))}</div></td></tr>`)
+          .join("")}</tbody></table></div>`;
+      }
+      if (d.only_a || d.only_b) {
+        html += `<div class="split"><div class="card list"><h3>${esc(t.onlyA)}</h3>${list(c.diff.only_a, "only-a")}</div>
+          <div class="card list"><h3>${esc(t.onlyB)}</h3>${list(c.diff.only_b, "only-b")}</div></div>`;
+      }
     }
     return html;
   }
@@ -794,8 +880,8 @@ class AutomationBacktestPanel extends HTMLElement {
       s.tab = el.dataset.tab;
       s.view = null;
       s.error = "";
+      if (s.tab === "compare" && s.automation && s.automation !== NEW) s.editing = true;
       this._renderAll();
-      if (s.tab === "compare" && s.automation && !s.yamlB) this._loadYaml();
     } else if (el.classList.contains("go")) {
       s.tab === "run" ? this._runBacktest() : this._runCompare();
     } else if (el.dataset.filter) {
@@ -814,8 +900,10 @@ class AutomationBacktestPanel extends HTMLElement {
     } else if (el.classList.contains("centre")) {
       const ms = Number(el.dataset.ms);
       this._setView([ms - 3600e3, ms + 3600e3]);
-    } else if (el.classList.contains("reset-yaml")) {
-      s.yaml = s.yamlSaved;
+    } else if (el.dataset.mode) {
+      this._switchMode(el.dataset.mode);
+    } else if (el.classList.contains("reset-draft")) {
+      this._resetDraft();
       this._renderBody();
     }
   }
@@ -832,8 +920,7 @@ class AutomationBacktestPanel extends HTMLElement {
       again.setSelectionRange(pos, pos);
     } else if (el.classList.contains("yaml-a")) {
       s.yaml = el.value;
-    } else if (el.classList.contains("yaml-b")) {
-      s.yamlB = el.value;
+      this._markDirty();
     }
   }
 
@@ -846,8 +933,11 @@ class AutomationBacktestPanel extends HTMLElement {
       s.cmp = null;
       s.selected = -1;
       s.view = null;
-      s.yaml = s.yamlSaved = s.yamlB = "";
-      s.yamlMode = false;
+      s.saved = null;
+      s.editing = false;
+      s.draft = null;
+      s.yaml = "";
+      s.dirty = false;
       s.fromEditor = false;
       s.error = "";
       const url = new URL(window.location.href);
@@ -856,18 +946,19 @@ class AutomationBacktestPanel extends HTMLElement {
       else url.searchParams.delete("automation");
       window.history.replaceState(window.history.state, "", url);
       if (s.automation === NEW) {
-        s.yamlMode = true;
+        s.editing = true;
+        s.draft = { triggers: [], conditions: [] };
         s.yaml = TEMPLATE;
         if (s.tab === "compare") s.tab = "run";
       }
       this._renderAll();
-      if (s.automation && s.automation !== NEW) this._loadYaml();
+      if (s.automation && s.automation !== NEW) this._loadSaved();
     } else if (el.classList.contains("start")) {
       s.start = el.value;
     } else if (el.classList.contains("end")) {
       s.end = el.value;
-    } else if (el.classList.contains("yaml-toggle")) {
-      s.yamlMode = el.checked;
+    } else if (el.classList.contains("draft-toggle")) {
+      s.editing = el.checked;
       this._renderBody();
     }
   }
@@ -894,45 +985,210 @@ class AutomationBacktestPanel extends HTMLElement {
     let config = null;
     try {
       config = JSON.parse(window.sessionStorage.getItem(DRAFT_KEY) || "null");
+      window.sessionStorage.removeItem(DRAFT_KEY);
     } catch (_e) {
       config = null;
     }
     s.automation = automation || NEW;
     this._renderAll();
     try {
-      const yaml = config ? (await this._ws({ type: "automation_backtest/to_yaml", config })).yaml : TEMPLATE;
-      if (automation) {
-        await this._loadYaml();
-        s.yamlB = yaml;
+      if (automation) await this._loadSaved();
+      if (config) {
+        const draft = normalise(config);
+        const yaml = (await this._ws({ type: "automation_backtest/to_yaml", config: draft })).yaml;
+        const changed = !automation || yaml !== s.saved?.yaml;
+        s.draft = draft;
+        s.yaml = yaml;
+        s.editing = changed;
+        s.dirty = changed;
+        s.fromEditor = changed && !!automation;
+      } else if (!automation) {
+        s.editing = true;
+        s.draft = { triggers: [], conditions: [] };
+        s.yaml = TEMPLATE;
       }
-      const changed = !automation || yaml !== s.yamlSaved;
-      s.yaml = yaml;
-      s.yamlMode = changed;
-      s.fromEditor = !!config && changed;
     } catch (err) {
       s.error = err?.message || String(err);
-    }
-    try {
-      window.sessionStorage.removeItem(DRAFT_KEY);
-    } catch (_e) {
-      /* ignore */
     }
     this._renderAll();
     if (config) this._runBacktest();
   }
 
-  async _loadYaml() {
+  async _loadSaved() {
     const s = this._s;
     if (!s.automation || s.automation === NEW) return;
     try {
       const res = await this._ws({ type: "automation_backtest/config", automation: s.automation });
-      s.yamlSaved = res.yaml;
-      if (!s.yaml) s.yaml = res.yaml;
-      if (!s.yamlB) s.yamlB = res.yaml;
+      s.saved = { yaml: res.yaml, config: res.config, id: res.id };
+      if (!s.dirty) this._resetDraft();
     } catch (err) {
       s.error = err?.message || String(err);
     }
     this._renderBody();
+  }
+
+  _resetDraft() {
+    const s = this._s;
+    if (!s.saved) return;
+    s.draft = JSON.parse(JSON.stringify(s.saved.config));
+    s.yaml = s.saved.yaml;
+    s.dirty = false;
+    s.fromEditor = false;
+    if (this._vis) {
+      this._vis.tr.triggers = s.draft.triggers;
+      this._vis.co.conditions = s.draft.conditions;
+    }
+    if (this._code) this._code.value = s.yaml;
+  }
+
+  _markDirty() {
+    const s = this._s;
+    s.dirty = true;
+    const badge = this.shadowRoot.querySelector(".dirty-badge");
+    if (badge && s.automation !== NEW) badge.hidden = false;
+  }
+
+  /** What the backend should replay as "the draft". */
+  _draftPayload(objKey, yamlKey) {
+    const s = this._s;
+    if (s.mode === "yaml") return { [yamlKey]: s.yaml };
+    return { [objKey]: s.draft || { triggers: [], conditions: [] } };
+  }
+
+  async _switchMode(mode) {
+    const s = this._s;
+    if (mode === s.mode) return;
+    try {
+      if (mode === "yaml") {
+        s.yaml = (await this._ws({ type: "automation_backtest/to_yaml", config: s.draft || {} })).yaml || TEMPLATE;
+        if (this._code) this._code.value = s.yaml;
+      } else {
+        const res = await this._ws({ type: "automation_backtest/from_yaml", yaml: s.yaml });
+        s.draft = res.config;
+        if (this._vis) {
+          this._vis.tr.triggers = s.draft.triggers;
+          this._vis.co.conditions = s.draft.conditions;
+        }
+      }
+      s.mode = mode;
+      s.error = "";
+    } catch (err) {
+      s.error = err?.message || String(err);
+    }
+    this._renderBody();
+  }
+
+  // --- the editor itself (HA's own blocks when available, else YAML) ------------
+
+  async _ensureVisual() {
+    if (this._visualPromise) return this._visualPromise;
+    this._visualPromise = (async () => {
+      const ready = () => customElements.get("ha-automation-trigger") && customElements.get("ha-automation-condition");
+      try {
+        if (!ready()) {
+          // Ask HA to load Settings → Automations (without opening it): it defines the editor blocks.
+          const resolver = findDeep(document, "partial-panel-resolver");
+          await resolver?.routerOptions?.routes?.config?.load?.();
+          const cfgPanel = document.createElement("ha-panel-config");
+          await cfgPanel.routerOptions?.routes?.automation?.load?.();
+          await Promise.race([
+            Promise.all([customElements.whenDefined("ha-automation-trigger"), customElements.whenDefined("ha-automation-condition")]),
+            new Promise((r) => setTimeout(r, 8000)),
+          ]);
+        }
+        await this._hass.loadFragmentTranslation?.("config");
+      } catch (_e) {
+        /* fall back to YAML */
+      }
+      return !!ready();
+    })();
+    return this._visualPromise;
+  }
+
+  _buildVisual() {
+    if (this._vis) return this._vis;
+    const t = this._t;
+    const wrap = document.createElement("div");
+    wrap.className = "visual";
+    const h1 = document.createElement("h4");
+    h1.textContent = t.when;
+    const h2 = document.createElement("h4");
+    h2.textContent = t.andIf;
+    const tr = document.createElement("ha-automation-trigger");
+    const co = document.createElement("ha-automation-condition");
+    for (const el of [tr, co]) {
+      el.hass = this._hass;
+      el.narrow = !!this._narrow;
+    }
+    tr.addEventListener("value-changed", (e) => {
+      e.stopPropagation();
+      this._s.draft = { ...(this._s.draft || {}), triggers: e.detail.value };
+      tr.triggers = e.detail.value;
+      this._markDirty();
+    });
+    co.addEventListener("value-changed", (e) => {
+      e.stopPropagation();
+      this._s.draft = { ...(this._s.draft || {}), conditions: e.detail.value };
+      co.conditions = e.detail.value;
+      this._markDirty();
+    });
+    wrap.append(h1, tr, h2, co);
+    this._vis = { wrap, tr, co };
+    return this._vis;
+  }
+
+  _buildCode() {
+    if (this._code) return this._code;
+    let code;
+    if (customElements.get("ha-code-editor")) {
+      code = document.createElement("ha-code-editor");
+      code.mode = "yaml";
+      code.hass = this._hass;
+      code.autocompleteEntities = true;
+      code.addEventListener("value-changed", (e) => {
+        e.stopPropagation();
+        this._s.yaml = e.detail.value;
+        this._markDirty();
+      });
+    } else {
+      code = document.createElement("textarea");
+      code.className = "code yaml-a";
+      code.spellcheck = false;
+    }
+    code.classList.add("yaml-editor");
+    this._code = code;
+    return code;
+  }
+
+  async _mountEditor() {
+    const slot = this.shadowRoot.querySelector(".ve-slot");
+    if (!slot) return;
+    const s = this._s;
+    if (s.mode === "visual") {
+      if (s.visualOk === null) s.visualOk = await this._ensureVisual();
+      if (!s.visualOk) {
+        s.mode = "yaml";
+        if (s.draft) {
+          try {
+            s.yaml = (await this._ws({ type: "automation_backtest/to_yaml", config: s.draft })).yaml || s.yaml;
+          } catch (_e) {
+            /* keep the current yaml */
+          }
+        }
+        this._renderBody();
+        return;
+      }
+      const vis = this._buildVisual();
+      const draft = s.draft || { triggers: [], conditions: [] };
+      if (vis.tr.triggers !== draft.triggers) vis.tr.triggers = draft.triggers;
+      if (vis.co.conditions !== draft.conditions) vis.co.conditions = draft.conditions;
+      const current = this.shadowRoot.querySelector(".ve-slot");
+      if (current) current.replaceChildren(vis.wrap);
+    } else {
+      const code = this._buildCode();
+      code.value = s.yaml;
+      slot.replaceChildren(code);
+    }
   }
 
   async _loadHistory(entities, period) {
@@ -977,7 +1233,7 @@ class AutomationBacktestPanel extends HTMLElement {
     this._renderBody();
     try {
       const msg = { type: "automation_backtest/run", ...this._periodMsg() };
-      if (s.automation === NEW || (s.yamlMode && s.yaml && s.yaml !== s.yamlSaved)) msg.config_yaml = s.yaml;
+      if (s.automation === NEW || (s.editing && s.dirty)) Object.assign(msg, this._draftPayload("config", "config_yaml"));
       else msg.automation = s.automation;
       const result = await this._ws(msg);
       s.history = await this._loadHistory(result.entities, result.period);
@@ -993,8 +1249,8 @@ class AutomationBacktestPanel extends HTMLElement {
 
   async _runCompare() {
     const s = this._s;
-    if (!s.automation) {
-      s.error = this._t.selectFirst;
+    if (!s.automation || s.automation === NEW) {
+      s.error = s.automation === NEW ? this._t.compareNeedsSaved : this._t.selectFirst;
       this._renderBody();
       return;
     }
@@ -1007,7 +1263,7 @@ class AutomationBacktestPanel extends HTMLElement {
       const cmp = await this._ws({
         type: "automation_backtest/compare",
         automation: s.automation,
-        config_b_yaml: s.yamlB,
+        ...this._draftPayload("config_b", "config_b_yaml"),
         ...this._periodMsg(),
       });
       s.history = await this._loadHistory(cmp.entities, cmp.a.period);
@@ -1037,6 +1293,7 @@ const STYLE = `
   --t2:rgba(23,27,36,.58);--t3:rgba(23,27,36,.45);--in:#1c9a56;--out:#d6402f;--unc:#7c5cd6;
   --accbg:linear-gradient(145deg,rgba(246,162,58,.20),rgba(246,162,58,.07));--accbd:1.5px solid rgba(214,128,30,.7);color-scheme:light}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 .root{display:flex;flex-direction:column;min-height:100vh;background:var(--bg)}
 header{display:flex;align-items:center;gap:8px;padding:12px 16px 4px}
 header .tt{flex:1;min-width:0}
@@ -1081,7 +1338,7 @@ button.flat{background:none;border:0;color:var(--acct);font:inherit;font-weight:
 .chip.plain{cursor:default}
 .chip b{font-weight:800}
 .chip.executed b{color:var(--in)} .chip.blocked b{color:var(--out)} .chip.uncertain b{color:var(--unc)}
-.chip.only-a b{color:var(--acc2)} .chip.only-b b{color:#5b8def} .chip.restart b{color:var(--t2)}
+.chip.only-a b{color:var(--acc2)} .chip.only-b b{color:#5b8def} .chip.shifted b{color:var(--acct)} .chip.restart b{color:var(--t2)}
 .banner{border-radius:16px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.45;border:var(--bd);background:var(--tile)}
 .banner.error{color:var(--out);border-color:rgba(255,122,107,.35)}
 .banner.warn{background:var(--accbg);border:var(--accbd)}
@@ -1092,8 +1349,17 @@ button.flat{background:none;border:0;color:var(--acct);font:inherit;font-weight:
 .hint-p{margin:0 0 6px;font-size:13px}
 .check{display:flex;gap:9px;align-items:center;cursor:pointer;font-weight:600}
 .check input{accent-color:var(--acc2);width:16px;height:16px;padding:0}
+.draft h3{margin:0 0 8px;font-size:15px}
+.draft-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0 8px}
+.draft-bar .grow{flex:1}
+.draft-bar .badge{margin:0}
+.seg.small{padding:3px;border-radius:13px}
+.seg.small button{padding:5px 12px;font-size:12px;border-radius:10px}
+.visual h4{margin:12px 2px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--t2);font-weight:700}
+.visual h4:first-child{margin-top:4px}
+ha-code-editor.yaml-editor{display:block;border:var(--bd);border-radius:14px;overflow:hidden;--code-mirror-height:auto}
 textarea.code{width:100%;min-height:200px;margin-top:10px;font-family:var(--code-font-family,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:13px;line-height:1.5;resize:vertical}
-.ab{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.ab{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,3fr);gap:14px;align-items:start}
 .ab h3{margin:0;font-size:15px}
 .narrow .ab{grid-template-columns:1fr}
 .chart-card{padding:12px 14px}
@@ -1120,6 +1386,7 @@ td.desc{word-break:break-word}
 .dot.blocked{background:color-mix(in srgb,var(--out) 18%,transparent);color:var(--out)}
 .dot.uncertain{background:color-mix(in srgb,var(--unc) 18%,transparent);color:var(--unc)}
 .dot.only-a{color:var(--acc2)} .dot.only-b{color:#5b8def}
+.dot.shifted{background:var(--accbg);color:var(--acct)}
 .detail{position:sticky;top:12px}
 .det-head{display:flex;gap:12px;align-items:center}
 .det-head .centre{margin-left:auto}
