@@ -52,6 +52,7 @@ const STR = {
     centre: "Zoom here",
     resetZoom: "Reset zoom",
     zoomHint: "Drag on the chart to zoom · double-click to reset",
+    zoomHintTouch: "Pinch to zoom · drag to move · double-tap to reset",
     showMore: "Show more",
     of: "of",
     truncated: "Only the first {n} runs are shown.",
@@ -120,6 +121,7 @@ const STR = {
     centre: "Zoom qui",
     resetZoom: "Annulla zoom",
     zoomHint: "Trascina sul grafico per lo zoom · doppio clic per annullare",
+    zoomHintTouch: "Pizzica per lo zoom · trascina per spostarti · doppio tocco per annullare",
     showMore: "Mostra altre",
     of: "di",
     truncated: "Sono mostrate solo le prime {n} esecuzioni.",
@@ -485,8 +487,7 @@ class AutomationBacktestPanel extends HTMLElement {
       html += `<div class="card empty">${esc(t.noRuns)}</div>`;
     }
     html += `<div class="card chart-card">
-      <div class="row between"><span class="hint">${esc(t.zoomHint)}</span>
-      ${s.view ? `<button class="flat reset-zoom">${esc(t.resetZoom)}</button>` : ""}</div>
+${this._chartBar()}
       <div class="chart"></div></div>`;
     if (r.runs.length) {
       html += `<div class="split"><div class="card list">${this._runList(r)}</div><div class="card detail">${this._detail(r)}</div></div>`;
@@ -605,8 +606,7 @@ class AutomationBacktestPanel extends HTMLElement {
     </div>`;
     html += this._notices(c.a) + this._notices(c.b);
     html += `<div class="card chart-card">
-      <div class="row between"><span class="hint">${esc(t.zoomHint)}</span>
-      ${s.view ? `<button class="flat reset-zoom">${esc(t.resetZoom)}</button>` : ""}</div>
+${this._chartBar()}
       <div class="chart"></div></div>`;
     if (!d.only_a && !d.only_b && !d.shifted) {
       html += `<div class="card empty">${esc(t.noDiff)}</div>`;
@@ -638,6 +638,19 @@ class AutomationBacktestPanel extends HTMLElement {
   }
 
   // --- chart -----------------------------------------------------------------
+
+  _chartBar() {
+    const t = this._t;
+    const touch = !!window.matchMedia?.("(pointer: coarse)").matches;
+    const v = !!this._s.view;
+    return `<div class="row between chart-bar"><span class="hint">${esc(touch ? t.zoomHintTouch : t.zoomHint)}</span>
+      <span class="zoom-btns">
+        ${v ? `<button class="zb pan-left" aria-label="◀">◀</button><button class="zb pan-right" aria-label="▶">▶</button>` : ""}
+        <button class="zb zoom-out" aria-label="−"${v ? "" : " disabled"}>−</button>
+        <button class="zb zoom-in" aria-label="+">+</button>
+        ${v ? `<button class="flat reset-zoom">${esc(t.resetZoom)}</button>` : ""}
+      </span></div>`;
+  }
 
   _renderChartOnly() {
     const host = this.shadowRoot?.querySelector(".chart");
@@ -682,7 +695,7 @@ class AutomationBacktestPanel extends HTMLElement {
     const right = 12;
     const plotW = Math.max(120, width - left - right);
     const x = (ms) => left + ((ms - t0) / (t1 - t0)) * plotW;
-    this._chartGeom = { left, plotW, t0, t1 };
+    this._chartGeom = { left, plotW, t0, t1, full };
 
     const parts = [];
     let y = 8;
@@ -710,7 +723,8 @@ class AutomationBacktestPanel extends HTMLElement {
         else if (run.status === "blocked") shape = `<rect x="${cx - 5}" y="${cy - 5}" width="10" height="10" class="${cls}"${data}/>`;
         else shape = `<path d="M${cx} ${cy - 6}L${cx + 6} ${cy}L${cx} ${cy + 6}L${cx - 6} ${cy}Z" class="${cls}"${data}/>`;
         if (hl) parts.push(`<circle cx="${cx}" cy="${cy}" r="9.5" class="ring ${lane.key}"/>`);
-        parts.push(`<g>${shape}<title>${esc(tip)}</title></g>`);
+        const hit = lane.key === "run" ? `<circle cx="${cx}" cy="${cy}" r="13" class="hit"${data}/>` : "";
+        parts.push(`<g>${shape}${hit}<title>${esc(tip)}</title></g>`);
       });
       y += h + 4;
     }
@@ -832,41 +846,133 @@ class AutomationBacktestPanel extends HTMLElement {
   }
 
   _bindDrag() {
+    // Pointer events: mouse = drag to zoom; touch = pinch to zoom, one finger
+    // drag to move (or to select when not zoomed), double-tap to reset.
     const root = this.shadowRoot;
-    root.addEventListener("mousedown", (e) => {
-      const svg = e.target.closest?.(".chart svg");
-      if (!svg || e.button !== 0 || e.target.dataset?.run) return;
-      const box = svg.getBoundingClientRect();
+    const ptrs = new Map();
+    let lastTap = 0;
+    root.addEventListener("pointerdown", (e) => {
+      const host = e.target.closest?.(".chart");
       const g = this._chartGeom;
+      if (!host || !g || (e.pointerType === "mouse" && e.button !== 0)) return;
+      if (e.target.dataset?.run !== undefined) return; // tap on a run marker: normal click
+      const box = host.getBoundingClientRect();
       const px = e.clientX - box.left;
-      if (!g || px < g.left) return;
-      this._drag = { svg, box, x0: px, x1: px };
-      e.preventDefault();
-    });
-    this._listen("mousemove", (e) => {
-      if (!this._drag) return;
-      const d = this._drag;
-      const g = this._chartGeom;
-      d.x1 = Math.min(Math.max(e.clientX - d.box.left, g.left), g.left + g.plotW);
-      const brush = d.svg.querySelector(".brush");
-      brush.setAttribute("visibility", "visible");
-      brush.setAttribute("x", Math.min(d.x0, d.x1));
-      brush.setAttribute("width", Math.abs(d.x1 - d.x0));
-    });
-    this._listen("mouseup", () => {
-      if (!this._drag) return;
-      const d = this._drag;
-      this._drag = null;
-      const g = this._chartGeom;
-      if (Math.abs(d.x1 - d.x0) < 6) {
-        d.svg.querySelector(".brush")?.setAttribute("visibility", "hidden");
+      ptrs.set(e.pointerId, px);
+      if (ptrs.size === 2) {
+        const [a, b] = [...ptrs.values()];
+        this._hideBrush();
+        this._drag = null;
+        this._pinch = { box, d0: Math.max(10, Math.abs(a - b)), mid: (a + b) / 2, v: [g.t0, g.t1] };
         return;
       }
-      const toMs = (px) => g.t0 + ((px - g.left) / g.plotW) * (g.t1 - g.t0);
-      const a = toMs(Math.min(d.x0, d.x1));
-      const b = toMs(Math.max(d.x0, d.x1));
-      if (b - a > 60e3) this._setView([a, b]);
+      if (ptrs.size > 2 || px < g.left) return;
+      const pan = e.pointerType !== "mouse" && !!this._s.view;
+      this._drag = { box, x0: px, x1: px, pan, v: [g.t0, g.t1], touch: e.pointerType !== "mouse", t: Date.now() };
+      if (e.pointerType === "mouse") e.preventDefault();
     });
+    this._listen("pointermove", (e) => {
+      if (!ptrs.has(e.pointerId)) return;
+      const px = e.clientX - (this._pinch || this._drag || {}).box?.left;
+      ptrs.set(e.pointerId, px);
+      const g = this._chartGeom;
+      if (this._pinch && ptrs.size >= 2) {
+        const [a, b] = [...ptrs.values()];
+        const p = this._pinch;
+        const span0 = p.v[1] - p.v[0];
+        const anchor = p.v[0] + ((p.mid - g.left) / g.plotW) * span0;
+        const span = span0 * (p.d0 / Math.max(10, Math.abs(a - b)));
+        const frac = ((a + b) / 2 - g.left) / g.plotW;
+        this._liveView([anchor - frac * span, anchor - frac * span + span]);
+      } else if (this._drag) {
+        const d = this._drag;
+        d.x1 = Math.min(Math.max(px, g.left), g.left + g.plotW);
+        if (d.pan) {
+          const dt = ((d.x0 - px) / g.plotW) * (d.v[1] - d.v[0]);
+          this._liveView([d.v[0] + dt, d.v[1] + dt], true);
+        } else {
+          const brush = this.shadowRoot.querySelector(".chart .brush");
+          brush?.setAttribute("visibility", "visible");
+          brush?.setAttribute("x", Math.min(d.x0, d.x1));
+          brush?.setAttribute("width", Math.abs(d.x1 - d.x0));
+        }
+      }
+    });
+    const end = (e) => {
+      if (!ptrs.has(e.pointerId)) return;
+      ptrs.delete(e.pointerId);
+      if (this._pinch) {
+        if (ptrs.size === 0) {
+          this._pinch = null;
+          this._setView(this._s.view);
+        }
+        return;
+      }
+      const d = this._drag;
+      this._drag = null;
+      if (!d) return;
+      const g = this._chartGeom;
+      const moved = Math.abs(d.x1 - d.x0);
+      if (d.pan) {
+        if (moved >= 6) return this._setView(this._s.view);
+      } else if (moved >= 6 && e.type === "pointerup") {
+        const toMs = (x) => g.t0 + ((x - g.left) / g.plotW) * (g.t1 - g.t0);
+        const a = toMs(Math.min(d.x0, d.x1));
+        const b = toMs(Math.max(d.x0, d.x1));
+        if (b - a > 60e3) return this._setView([a, b]);
+      }
+      this._hideBrush();
+      if (d.touch && moved < 6 && Date.now() - d.t < 300) {
+        if (Date.now() - lastTap < 350) {
+          lastTap = 0;
+          this._setView(null);
+        } else lastTap = Date.now();
+      }
+    };
+    this._listen("pointerup", end);
+    this._listen("pointercancel", end);
+  }
+
+  _hideBrush() {
+    this.shadowRoot.querySelector(".chart .brush")?.setAttribute("visibility", "hidden");
+  }
+
+  /** Clamp a view to the backtest period (null = whole period). */
+  _clampView(view) {
+    const g = this._chartGeom;
+    if (!view || !g) return null;
+    const [f0, f1] = g.full;
+    let [a, b] = view;
+    let span = Math.max(b - a, 2 * 60e3);
+    if (span >= f1 - f0) return null;
+    if (a < f0) a = f0;
+    if (a + span > f1) a = f1 - span;
+    return [a, a + span];
+  }
+
+  /** Redraw only the chart while a gesture is running. */
+  _liveView(view) {
+    this._s.view = this._clampView(view);
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = null;
+      this._renderChartOnly();
+    });
+  }
+
+  _zoomBy(factor) {
+    const g = this._chartGeom;
+    if (!g) return;
+    const mid = (g.t0 + g.t1) / 2;
+    const span = (g.t1 - g.t0) * factor;
+    this._setView(this._clampView([mid - span / 2, mid + span / 2]));
+  }
+
+  _panBy(fraction) {
+    const g = this._chartGeom;
+    if (!g || !this._s.view) return;
+    const dt = (g.t1 - g.t0) * fraction;
+    this._setView(this._clampView([g.t0 + dt, g.t1 + dt]));
   }
 
   _setView(view) {
@@ -912,6 +1018,14 @@ class AutomationBacktestPanel extends HTMLElement {
     } else if (el.classList.contains("more")) {
       s.listLimit += LIST_PAGE;
       this._renderBody();
+    } else if (el.classList.contains("zoom-in")) {
+      this._zoomBy(0.5);
+    } else if (el.classList.contains("zoom-out")) {
+      this._zoomBy(2);
+    } else if (el.classList.contains("pan-left")) {
+      this._panBy(-0.5);
+    } else if (el.classList.contains("pan-right")) {
+      this._panBy(0.5);
     } else if (el.classList.contains("reset-zoom")) {
       this._setView(null);
     } else if (el.classList.contains("centre")) {
@@ -1380,7 +1494,12 @@ textarea.code{width:100%;min-height:200px;margin-top:10px;font-family:var(--code
 .ab h3{margin:0;font-size:15px}
 .narrow .ab{grid-template-columns:1fr}
 .chart-card{padding:12px 14px}
-.chart{width:100%;overflow:hidden;user-select:none;margin-top:4px}
+.chart{width:100%;overflow:hidden;user-select:none;-webkit-user-select:none;margin-top:4px;touch-action:pan-y}
+.chart-bar{flex-wrap:wrap;gap:6px}
+.zoom-btns{display:flex;gap:6px;align-items:center}
+.zb{width:34px;height:34px;border-radius:12px;border:var(--bd);background:var(--tile);color:var(--fg);font:inherit;font-size:16px;font-weight:700;cursor:pointer;padding:0}
+.zb[disabled]{opacity:.35;cursor:default}
+svg .hit{fill:transparent;cursor:pointer}
 .chart svg{display:block}
 .split{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:14px;align-items:start}
 .narrow .split{grid-template-columns:1fr}
