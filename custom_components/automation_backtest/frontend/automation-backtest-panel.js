@@ -8,6 +8,11 @@
 const STR = {
   en: {
     title: "Automation Backtest",
+    subtitle: "Replay automations on your history",
+    newDraft: "＋ New automation (draft)",
+    newHint: "Write the triggers and conditions of an automation you have not created yet: you will see when it would have run if it had existed.",
+    draftFromEditor: "Unsaved changes from the automation editor",
+    compareNeedsSaved: "Compare needs a saved automation to use as version A.",
     automation: "Automation",
     search: "Search…",
     period: "Period",
@@ -58,6 +63,11 @@ const STR = {
   },
   it: {
     title: "Automation Backtest",
+    subtitle: "Rigioca le automazioni sul tuo storico",
+    newDraft: "＋ Nuova automazione (bozza)",
+    newHint: "Scrivi trigger e condizioni di un'automazione che non hai ancora creato: vedrai quando sarebbe partita se fosse esistita.",
+    draftFromEditor: "Modifiche non salvate dall'editor dell'automazione",
+    compareNeedsSaved: "Il confronto richiede un'automazione salvata da usare come versione A.",
     automation: "Automazione",
     search: "Cerca…",
     period: "Periodo",
@@ -108,6 +118,16 @@ const STR = {
   },
 };
 
+const NEW = "__new__";
+const DRAFT_KEY = "automation_backtest_draft";
+const TEMPLATE = `triggers:
+  - trigger: state
+    entity_id: binary_sensor.example
+    to: "on"
+conditions: []
+`;
+const LOGO = `<svg viewBox="0 0 64 64" class="logo-ic" aria-hidden="true"><defs><linearGradient id="abt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbb04f"/><stop offset="1" stop-color="#e5762f"/></linearGradient></defs><rect x="4" y="4" width="56" height="56" rx="16" fill="url(#abt-g)"/><path d="M32 15a17 17 0 1 1-16.1 11.6" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M12 17v11h11" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 23v10l7 5" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const MENU_PATH = "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z";
 const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
 const PERIODS = [1, 3, 7, 14];
 const LIST_PAGE = 200;
@@ -119,8 +139,8 @@ const esc = (v) =>
 const PALETTE = ["#5b8def", "#e8a33d", "#9b6bd6", "#3fb6a8", "#d9667a", "#7a9e3b", "#c77c3a", "#4fa3d1"];
 function stateColor(state) {
   const s = String(state);
-  if (["on", "home", "open", "playing", "heat", "cleaning", "unlocked"].includes(s)) return "#f2b134";
-  if (["off", "not_home", "closed", "idle", "docked", "locked", "standby"].includes(s)) return "#8f9aa5";
+  if (["on", "home", "open", "playing", "heat", "cleaning", "unlocked"].includes(s)) return "rgba(246,162,58,.75)";
+  if (["off", "not_home", "closed", "idle", "docked", "locked", "standby"].includes(s)) return "rgba(var(--fgr),.14)";
   if (["unavailable", "unknown"].includes(s)) return "transparent";
   let h = 0;
   for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -161,7 +181,15 @@ class AutomationBacktestPanel extends HTMLElement {
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
+    this._applyTheme();
     if (first) this._init();
+  }
+
+  _applyTheme() {
+    const ha = this._hass?.themes?.darkMode;
+    const dark = typeof ha === "boolean" ? ha : !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    const mode = dark ? "dark" : "light";
+    if (this.getAttribute("theme") !== mode) this.setAttribute("theme", mode);
   }
 
   set narrow(value) {
@@ -210,8 +238,11 @@ class AutomationBacktestPanel extends HTMLElement {
     this.shadowRoot.innerHTML = `<style>${STYLE}</style>
       <div class="root${this._narrow ? " narrow" : ""}">
         <header>
-          <button class="menu" title="Menu">☰</button>
-          <h1>${esc(t.title)}</h1>
+          <button class="ib menu" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="${MENU_PATH}"/></svg></button>
+          <div class="tt">
+            <h1 class="logo" aria-label="${esc(t.title)}">${LOGO}<span>Automation<b>Backtest</b></span></h1>
+            <div class="who">${esc(t.subtitle)}</div>
+          </div>
         </header>
         <main>
           <section class="card controls"></section>
@@ -224,7 +255,7 @@ class AutomationBacktestPanel extends HTMLElement {
     this._tabs = this.shadowRoot.querySelector(".tabs");
     this._body = this.shadowRoot.querySelector(".body");
 
-    this.shadowRoot.querySelector(".menu").addEventListener("click", () =>
+    this.shadowRoot.querySelector(".ib.menu").addEventListener("click", () =>
       this.dispatchEvent(new CustomEvent("hass-toggle-menu", { bubbles: true, composed: true }))
     );
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
@@ -236,15 +267,35 @@ class AutomationBacktestPanel extends HTMLElement {
     this._bindDrag();
     window.addEventListener("resize", () => this._renderChartOnly());
 
-    const params = new URLSearchParams(window.location.search);
+    window.addEventListener("location-changed", () => {
+      if (window.location.pathname.startsWith("/automation-backtest")) setTimeout(() => this._fromUrl(), 0);
+    });
+    this._renderAll();
+    this._fromUrl();
+  }
+
+  _fromUrl() {
+    // Deep links: ?automation=automation.x  (from the ⋮ menu of the list)
+    //             ?automation=automation.x&draft=1 / ?draft=1  (from the editor, unsaved config)
+    const search = window.location.search;
+    if (search === this._lastSearch) return;
+    this._lastSearch = search;
+    const params = new URLSearchParams(search);
     const fromUrl = params.get("automation");
-    if (fromUrl && this._hass.states[fromUrl]) {
-      this._s.automation = fromUrl;
-      this._renderAll();
-      this._loadYaml().then(() => this._runBacktest());
+    const known = fromUrl && this._hass.states[fromUrl] ? fromUrl : null;
+    if (!params.get("draft") && !known) return;
+    const s = this._s;
+    Object.assign(s, {
+      tab: "run", result: null, cmp: null, selected: -1, view: null, error: "",
+      yaml: "", yamlSaved: "", yamlB: "", yamlMode: false, fromEditor: false, statusFilter: null,
+    });
+    if (params.get("draft")) {
+      this._loadDraft(known);
       return;
     }
+    s.automation = known;
     this._renderAll();
+    this._loadYaml().then(() => this._runBacktest());
   }
 
   // --- rendering -----------------------------------------------------------
@@ -272,6 +323,7 @@ class AutomationBacktestPanel extends HTMLElement {
           <input class="filter" type="search" placeholder="${esc(t.search)}" value="${esc(s.filter)}">
           <select class="auto">
             <option value="">—</option>
+            <option value="${NEW}"${s.automation === NEW ? " selected" : ""}>${esc(t.newDraft)}</option>
             ${shown.map((a) => `<option value="${esc(a.id)}"${a.id === s.automation ? " selected" : ""}>${esc(a.name)}${a.state === "off" ? " (off)" : ""}</option>`).join("")}
           </select>
         </div>
@@ -315,7 +367,14 @@ class AutomationBacktestPanel extends HTMLElement {
     const t = this._t;
     const s = this._s;
     if (!s.automation) return "";
+    if (s.automation === NEW) {
+      return `<div class="card yaml">
+        <p class="muted hint-p">${esc(t.newHint)}</p>
+        <textarea class="code yaml-a" spellcheck="false">${esc(s.yaml)}</textarea>
+      </div>`;
+    }
     return `<div class="card yaml">
+      ${s.fromEditor ? `<div class="badge warn">${esc(t.draftFromEditor)}</div>` : ""}
       <label class="check"><input type="checkbox" class="yaml-toggle" ${s.yamlMode ? "checked" : ""}> ${esc(t.editYaml)}</label>
       ${s.yamlMode ? `
         <textarea class="code yaml-a" spellcheck="false">${esc(s.yaml)}</textarea>
@@ -441,6 +500,7 @@ class AutomationBacktestPanel extends HTMLElement {
     const t = this._t;
     const s = this._s;
     if (!s.automation) return `<div class="card empty">${esc(t.selectFirst)}</div>`;
+    if (s.automation === NEW) return `<div class="card empty">${esc(t.compareNeedsSaved)}</div>`;
     let html = `<div class="ab">
       <div class="card"><h3>${esc(t.versionA)}</h3><textarea class="code" readonly>${esc(s.yamlSaved)}</textarea></div>
       <div class="card"><h3>${esc(t.versionB)}</h3><textarea class="code yaml-b" spellcheck="false">${esc(s.yamlB)}</textarea></div>
@@ -788,13 +848,20 @@ class AutomationBacktestPanel extends HTMLElement {
       s.view = null;
       s.yaml = s.yamlSaved = s.yamlB = "";
       s.yamlMode = false;
+      s.fromEditor = false;
       s.error = "";
       const url = new URL(window.location.href);
-      if (s.automation) url.searchParams.set("automation", s.automation);
+      url.searchParams.delete("draft");
+      if (s.automation && s.automation !== NEW) url.searchParams.set("automation", s.automation);
       else url.searchParams.delete("automation");
       window.history.replaceState(window.history.state, "", url);
+      if (s.automation === NEW) {
+        s.yamlMode = true;
+        s.yaml = TEMPLATE;
+        if (s.tab === "compare") s.tab = "run";
+      }
       this._renderAll();
-      if (s.automation) this._loadYaml();
+      if (s.automation && s.automation !== NEW) this._loadYaml();
     } else if (el.classList.contains("start")) {
       s.start = el.value;
     } else if (el.classList.contains("end")) {
@@ -822,9 +889,41 @@ class AutomationBacktestPanel extends HTMLElement {
     return { days: s.days };
   }
 
+  async _loadDraft(automation) {
+    const s = this._s;
+    let config = null;
+    try {
+      config = JSON.parse(window.sessionStorage.getItem(DRAFT_KEY) || "null");
+    } catch (_e) {
+      config = null;
+    }
+    s.automation = automation || NEW;
+    this._renderAll();
+    try {
+      const yaml = config ? (await this._ws({ type: "automation_backtest/to_yaml", config })).yaml : TEMPLATE;
+      if (automation) {
+        await this._loadYaml();
+        s.yamlB = yaml;
+      }
+      const changed = !automation || yaml !== s.yamlSaved;
+      s.yaml = yaml;
+      s.yamlMode = changed;
+      s.fromEditor = !!config && changed;
+    } catch (err) {
+      s.error = err?.message || String(err);
+    }
+    try {
+      window.sessionStorage.removeItem(DRAFT_KEY);
+    } catch (_e) {
+      /* ignore */
+    }
+    this._renderAll();
+    if (config) this._runBacktest();
+  }
+
   async _loadYaml() {
     const s = this._s;
-    if (!s.automation) return;
+    if (!s.automation || s.automation === NEW) return;
     try {
       const res = await this._ws({ type: "automation_backtest/config", automation: s.automation });
       s.yamlSaved = res.yaml;
@@ -878,7 +977,7 @@ class AutomationBacktestPanel extends HTMLElement {
     this._renderBody();
     try {
       const msg = { type: "automation_backtest/run", ...this._periodMsg() };
-      if (s.yamlMode && s.yaml && s.yaml !== s.yamlSaved) msg.config_yaml = s.yaml;
+      if (s.automation === NEW || (s.yamlMode && s.yaml && s.yaml !== s.yamlSaved)) msg.config_yaml = s.yaml;
       else msg.automation = s.automation;
       const result = await this._ws(msg);
       s.history = await this._loadHistory(result.entities, result.period);
@@ -923,119 +1022,140 @@ class AutomationBacktestPanel extends HTMLElement {
 }
 
 const STYLE = `
-:host { display:block; height:100%; background:var(--primary-background-color); color:var(--primary-text-color);
-  font-family:var(--paper-font-body1_-_font-family, Roboto, system-ui, sans-serif); }
-.root { display:flex; flex-direction:column; min-height:100%; }
-header { display:flex; align-items:center; gap:8px; height:56px; padding:0 16px; position:sticky; top:0; z-index:2;
-  background:var(--app-header-background-color, var(--primary-color)); color:var(--app-header-text-color, #fff);
-  border-bottom:1px solid var(--app-header-border-bottom, transparent); }
-header h1 { font-size:20px; font-weight:400; margin:0; }
-.menu { display:none; background:none; border:0; color:inherit; font-size:22px; cursor:pointer; padding:6px; }
-.narrow .menu { display:block; }
-main { padding:16px; max-width:1400px; width:100%; box-sizing:border-box; margin:0 auto; }
-.card { background:var(--card-background-color, #fff); border-radius:var(--ha-card-border-radius, 12px);
-  box-shadow:var(--ha-card-box-shadow, none); border:1px solid var(--divider-color, #e0e0e0); padding:16px; margin-bottom:16px; }
-.controls { display:flex; flex-wrap:wrap; gap:16px 24px; align-items:flex-end; }
-.field { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.field.grow { flex:1 1 320px; }
-.field label { font-size:12px; color:var(--secondary-text-color); text-transform:uppercase; letter-spacing:.04em; }
-.pick { display:flex; gap:8px; }
-.pick .filter { flex:0 0 140px; }
-.pick select { flex:1; min-width:0; width:100%; }
-.narrow .pick { flex-direction:column; }
-.narrow .pick .filter { flex:none; }
-.narrow td.time { white-space:normal; width:72px; font-size:12px; }
-.narrow td.desc { overflow-wrap:anywhere; }
-input, select, textarea { font:inherit; color:var(--primary-text-color); background:var(--secondary-background-color, #f5f5f5);
-  border:1px solid var(--divider-color, #ccc); border-radius:8px; padding:8px 10px; }
-.range { display:flex; gap:8px; flex-wrap:wrap; }
-.range label { text-transform:none; letter-spacing:0; display:flex; gap:6px; align-items:center; }
-.seg { display:flex; border:1px solid var(--divider-color); border-radius:8px; overflow:hidden; }
-.seg button { border:0; border-right:1px solid var(--divider-color); background:none; color:inherit; padding:8px 12px; cursor:pointer; font:inherit; }
-.seg button:last-child { border-right:0; }
-.seg button.on, .tabs button.on { background:var(--primary-color); color:var(--text-primary-color, #fff); }
-button.primary { background:var(--primary-color); color:var(--text-primary-color, #fff); border:0; border-radius:8px; padding:10px 18px; font:inherit; font-weight:500; cursor:pointer; }
-button.primary[disabled] { opacity:.5; cursor:default; }
-button.flat { background:none; border:0; color:var(--primary-color); font:inherit; cursor:pointer; padding:6px 8px; }
-.link { font-size:13px; color:var(--primary-color); text-decoration:none; }
-.tabs { display:flex; gap:8px; margin-bottom:16px; }
-.tabs button { border:1px solid var(--divider-color); background:var(--card-background-color); color:inherit; border-radius:999px; padding:6px 16px; font:inherit; cursor:pointer; }
-.chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
-.chip { border:1px solid var(--divider-color); background:var(--card-background-color); color:inherit; border-radius:999px; padding:6px 14px; font:inherit; cursor:pointer; }
-.chip.plain { cursor:default; }
-.chip b { font-weight:600; }
-.chip.executed b { color:var(--success-color, #43a047); } .chip.blocked b { color:var(--error-color, #db4437); } .chip.uncertain b { color:var(--warning-color, #ffa600); }
-.chip.on { border-color:var(--primary-color); box-shadow:0 0 0 1px var(--primary-color) inset; }
-.chip.only-a b { color:#e8833a; } .chip.only-b b { color:#4f8fe8; }
-.chip.restart b { color:var(--secondary-text-color); }
-.banner { border-radius:10px; padding:10px 14px; margin-bottom:16px; font-size:14px; line-height:1.4; }
-.banner.error { background:rgba(219,68,55,.12); color:var(--error-color, #db4437); }
-.banner.warn { background:rgba(255,166,0,.12); }
-.banner.info { background:rgba(3,169,244,.10); }
-.badge.warn { background:rgba(255,166,0,.18); border-radius:6px; padding:3px 8px; font-size:13px; }
-.row { display:flex; gap:12px; align-items:center; margin-top:8px; }
-.row.between { justify-content:space-between; margin-top:0; }
-.hint { font-size:12px; color:var(--secondary-text-color); }
-.check { display:flex; gap:8px; align-items:center; cursor:pointer; }
-textarea.code { width:100%; min-height:220px; box-sizing:border-box; margin-top:10px;
-  font-family:var(--code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:13px; line-height:1.45; resize:vertical; }
-.ab { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-.ab .card { margin-bottom:16px; } .ab h3 { margin:0; }
-.narrow .ab { grid-template-columns:1fr; }
-.chart { width:100%; overflow:hidden; user-select:none; margin-top:6px; }
-.chart svg { display:block; }
-.split { display:grid; grid-template-columns:minmax(0, 3fr) minmax(0, 2fr); gap:16px; align-items:start; }
-.narrow .split { grid-template-columns:1fr; }
-.list { max-height:560px; overflow:auto; padding:8px; }
-.list h3 { margin:6px 8px 10px; }
-table { width:100%; border-collapse:collapse; font-size:14px; }
-tr[data-run] { cursor:pointer; }
-tr[data-run]:hover { background:var(--secondary-background-color, rgba(0,0,0,.04)); }
-tr.sel { background:rgba(3,169,244,.12) !important; }
-td { padding:7px 8px; border-bottom:1px solid var(--divider-color); vertical-align:top; }
-td.time { white-space:nowrap; color:var(--secondary-text-color); font-variant-numeric:tabular-nums; }
-td.desc { word-break:break-word; }
-.why { font-size:12px; color:var(--secondary-text-color); margin-top:3px; }
-.dot { display:inline-flex; width:20px; height:20px; border-radius:50%; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#fff; }
-.dot.big { width:34px; height:34px; font-size:17px; }
-.dot.executed { background:var(--success-color, #43a047); } .dot.blocked { background:var(--error-color, #db4437); border-radius:5px; }
-.dot.uncertain { background:var(--warning-color, #ffa600); }
-.dot.only-a { background:none; color:#e8833a; } .dot.only-b { background:none; color:#4f8fe8; }
-.detail { position:sticky; top:72px; }
-.det-head { display:flex; gap:12px; align-items:center; }
-.det-head .centre { margin-left:auto; }
-.det-status { font-weight:600; }
-.detail h3 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--secondary-text-color); margin:18px 0 6px; }
-.detail p { margin:4px 0; line-height:1.45; }
-.reason { padding:8px 10px; border-radius:8px; }
-.reason.blocked { background:rgba(219,68,55,.10); } .reason.uncertain { background:rgba(255,166,0,.12); }
-.trace { list-style:none; padding:0; margin:0; }
-.trace li { display:flex; gap:8px; align-items:flex-start; padding:5px 6px; border-radius:6px; font-size:14px; }
-.trace li .dot { flex:0 0 20px; }
-.trace li.key { background:rgba(219,68,55,.10); }
-.muted { color:var(--secondary-text-color); }
-code { font-family:var(--code-font-family, ui-monospace, monospace); font-size:13px; }
-.empty { color:var(--secondary-text-color); padding:12px; }
-.loading { display:flex; gap:12px; align-items:center; justify-content:center; padding:24px; color:var(--secondary-text-color); }
-.spinner { width:20px; height:20px; border-radius:50%; border:3px solid var(--divider-color); border-top-color:var(--primary-color); animation:spin 1s linear infinite; }
-@keyframes spin { to { transform:rotate(360deg); } }
-svg .lbl { font-size:12px; fill:var(--primary-text-color); }
-svg .tick { font-size:11px; fill:var(--secondary-text-color); }
-svg .grid { stroke:var(--divider-color, #ddd); stroke-width:1; opacity:.6; }
-svg .laneline { stroke:var(--divider-color, #ddd); }
-svg .laneBg { fill:var(--secondary-background-color, #f5f5f5); opacity:.5; }
-svg .series { fill:none; stroke:var(--primary-color, #03a9f4); stroke-width:1.6; }
-svg .thr { stroke:var(--error-color, #db4437); stroke-dasharray:5 4; stroke-width:1.2; }
-svg .thrlbl { font-size:11px; fill:var(--error-color, #db4437); }
-svg .band { opacity:.85; }
-svg .bandtxt { font-size:11px; fill:#1c1c1c; pointer-events:none; }
-svg .restart { fill:var(--secondary-text-color, #888); opacity:.16; }
-svg .mk { cursor:pointer; stroke:var(--card-background-color, #fff); stroke-width:1.5; }
-svg .mk.executed { fill:var(--success-color, #43a047); } svg .mk.blocked { fill:var(--error-color, #db4437); } svg .mk.uncertain { fill:var(--warning-color, #ffa600); }
-svg .mk.sel { stroke:var(--primary-text-color); stroke-width:2.5; }
-svg .ring { fill:none; stroke-width:2; } svg .ring.a { stroke:#e8833a; } svg .ring.b { stroke:#4f8fe8; }
-svg .cursor { stroke:var(--primary-text-color); stroke-width:1; stroke-dasharray:3 3; opacity:.7; }
-svg .brush { fill:var(--primary-color, #03a9f4); opacity:.15; }
+:host{display:block;height:100%;min-height:100vh;color:var(--fg);-webkit-tap-highlight-color:transparent;font-size:14px;line-height:1.4;
+  font-family:var(--ha-font-family-body,var(--paper-font-body1_-_font-family,Roboto,system-ui,sans-serif));
+  --acc:#f6a23a;--acc2:#ea863c;--accbg:linear-gradient(145deg,rgba(246,162,58,.14),rgba(246,162,58,.04));--accbd:1.5px solid rgba(246,162,58,.65);
+  --fg:#fff;--fgr:255,255,255;--acct:#f6a23a;
+  --sh:0 14px 34px rgba(0,0,0,.30);
+  --bg:radial-gradient(160% 70% at 0% 15%,rgba(112,76,36,.36),transparent 62%),radial-gradient(170% 65% at 100% 100%,rgba(28,50,110,.34),transparent 65%),#0c0f15;
+  --panel:rgb(23,27,36);--tile:rgba(var(--fgr),.04);--bd:1px solid rgba(var(--fgr),.07);--line:rgba(var(--fgr),.07);
+  --t2:rgba(var(--fgr),.55);--t3:rgba(var(--fgr),.45);--in:#4cd08a;--out:#ff7a6b;--unc:#a78bfa;--r:24px;color-scheme:dark}
+:host([theme="light"]){--fg:#171b24;--fgr:23,27,36;--acct:#b9650d;
+  --sh:0 8px 24px rgba(23,27,36,.08);
+  --bg:radial-gradient(160% 70% at 0% 15%,rgba(246,162,58,.20),transparent 62%),radial-gradient(170% 65% at 100% 100%,rgba(80,120,210,.16),transparent 65%),#f3f1ed;
+  --panel:#fff;--tile:rgba(23,27,36,.035);--bd:1px solid rgba(23,27,36,.08);--line:rgba(23,27,36,.08);
+  --t2:rgba(23,27,36,.58);--t3:rgba(23,27,36,.45);--in:#1c9a56;--out:#d6402f;--unc:#7c5cd6;
+  --accbg:linear-gradient(145deg,rgba(246,162,58,.20),rgba(246,162,58,.07));--accbd:1.5px solid rgba(214,128,30,.7);color-scheme:light}
+*{box-sizing:border-box}
+.root{display:flex;flex-direction:column;min-height:100vh;background:var(--bg)}
+header{display:flex;align-items:center;gap:8px;padding:12px 16px 4px}
+header .tt{flex:1;min-width:0}
+h1.logo{display:flex;align-items:center;gap:9px;font-size:22px;font-weight:800;letter-spacing:-.3px;margin:0}
+h1.logo b{font-weight:800;color:var(--acc2)}
+.logo-ic{width:30px;height:30px;flex:none}
+.who{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--t2);margin-top:3px}
+.ib{background:rgba(var(--fgr),.06);border:var(--bd);color:rgba(var(--fgr),.88);width:42px;height:42px;border-radius:50%;display:none;place-items:center;cursor:pointer;padding:0;flex:none}
+.ib svg{width:22px;height:22px;fill:currentColor}
+.narrow .ib{display:grid}
+main{padding:10px 16px 40px;max-width:1400px;width:100%;margin:0 auto}
+.card{background:var(--panel);border:var(--bd);border-radius:var(--r);box-shadow:var(--sh);padding:14px 16px;margin-bottom:14px}
+.controls{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:7px;min-width:0}
+.field.grow{flex:1 1 340px}
+.field>label{font-size:11px;color:var(--t2);text-transform:uppercase;letter-spacing:.14em;font-weight:700}
+.pick{display:flex;gap:8px}
+.pick .filter{flex:0 0 150px}
+.pick select{flex:1;min-width:0;width:100%}
+.narrow .pick{flex-direction:column} .narrow .pick .filter{flex:none}
+input,select,textarea{font:inherit;font-size:14px;color:var(--fg);background:rgba(var(--fgr),.05);border:1px solid rgba(var(--fgr),.08);border-radius:14px;padding:10px 13px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:rgba(246,162,58,.6)}
+input::placeholder{color:rgba(var(--fgr),.35)}
+select{-webkit-appearance:none;appearance:none;padding-right:32px;
+  background-image:linear-gradient(45deg,transparent 50%,rgba(var(--fgr),.6) 50%),linear-gradient(135deg,rgba(var(--fgr),.6) 50%,transparent 50%);
+  background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+option{background:var(--panel);color:var(--fg)}
+.range{display:flex;gap:8px;flex-wrap:wrap}
+.range label{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--t2)}
+.link{font-size:12px;color:var(--acct);text-decoration:none;font-weight:600}
+.seg{display:flex;background:rgba(var(--fgr),.04);border:var(--bd);border-radius:16px;padding:4px;gap:4px;flex-wrap:wrap}
+.seg button{border:0;background:none;color:rgba(var(--fgr),.62);font:inherit;font-size:13px;font-weight:700;padding:7px 12px;border-radius:12px;cursor:pointer}
+.seg button.on{background:linear-gradient(90deg,var(--acc),var(--acc2));color:#2b1904}
+button.primary{border:0;border-radius:16px;padding:11px 20px;font:inherit;font-weight:700;font-size:14px;cursor:pointer;
+  background:linear-gradient(90deg,var(--acc),var(--acc2));color:#2b1904;box-shadow:0 6px 18px rgba(246,162,58,.25)}
+button.primary[disabled]{opacity:.5;cursor:default}
+button.flat{background:none;border:0;color:var(--acct);font:inherit;font-weight:700;font-size:13px;cursor:pointer;padding:6px 8px}
+.tabs{display:flex;gap:8px;margin:2px 0 14px}
+.tabs button,.chip{border:var(--bd);background:var(--tile);color:rgba(var(--fgr),.88);border-radius:99px;padding:7px 14px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.tabs button.on,.chip.on{background:var(--accbg);border:var(--accbd);color:var(--acct)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.chip.plain{cursor:default}
+.chip b{font-weight:800}
+.chip.executed b{color:var(--in)} .chip.blocked b{color:var(--out)} .chip.uncertain b{color:var(--unc)}
+.chip.only-a b{color:var(--acc2)} .chip.only-b b{color:#5b8def} .chip.restart b{color:var(--t2)}
+.banner{border-radius:16px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.45;border:var(--bd);background:var(--tile)}
+.banner.error{color:var(--out);border-color:rgba(255,122,107,.35)}
+.banner.warn{background:var(--accbg);border:var(--accbd)}
+.badge.warn{display:inline-block;background:var(--accbg);border:var(--accbd);color:var(--acct);border-radius:99px;padding:4px 11px;font-size:12px;font-weight:700;margin-bottom:8px}
+.row{display:flex;gap:12px;align-items:center;margin-top:8px}
+.row.between{justify-content:space-between;margin-top:0}
+.hint{font-size:11px;color:var(--t3)}
+.hint-p{margin:0 0 6px;font-size:13px}
+.check{display:flex;gap:9px;align-items:center;cursor:pointer;font-weight:600}
+.check input{accent-color:var(--acc2);width:16px;height:16px;padding:0}
+textarea.code{width:100%;min-height:200px;margin-top:10px;font-family:var(--code-font-family,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:13px;line-height:1.5;resize:vertical}
+.ab{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.ab h3{margin:0;font-size:15px}
+.narrow .ab{grid-template-columns:1fr}
+.chart-card{padding:12px 14px}
+.chart{width:100%;overflow:hidden;user-select:none;margin-top:4px}
+.chart svg{display:block}
+.split{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:14px;align-items:start}
+.narrow .split{grid-template-columns:1fr}
+.list{max-height:560px;overflow:auto;padding:6px 10px}
+.list h3{margin:8px 6px 6px;font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+tr[data-run]{cursor:pointer}
+tr[data-run]:hover td{background:rgba(var(--fgr),.03)}
+tr.sel td{background:rgba(246,162,58,.13)!important}
+td{padding:9px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.time{white-space:nowrap;color:var(--t2);font-variant-numeric:tabular-nums}
+td.desc{word-break:break-word}
+.narrow td.time{white-space:normal;width:72px;font-size:12px}
+.narrow td.desc{overflow-wrap:anywhere}
+.why{font-size:12px;color:var(--t2);margin-top:2px}
+.dot{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:9px;font-size:12px;font-weight:800}
+.dot.big{width:40px;height:40px;border-radius:14px;font-size:18px}
+.dot.executed{background:color-mix(in srgb,var(--in) 18%,transparent);color:var(--in)}
+.dot.blocked{background:color-mix(in srgb,var(--out) 18%,transparent);color:var(--out)}
+.dot.uncertain{background:color-mix(in srgb,var(--unc) 18%,transparent);color:var(--unc)}
+.dot.only-a{color:var(--acc2)} .dot.only-b{color:#5b8def}
+.detail{position:sticky;top:12px}
+.det-head{display:flex;gap:12px;align-items:center}
+.det-head .centre{margin-left:auto}
+.det-status{font-weight:700;font-size:16px}
+.detail h3{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--t2);margin:16px 0 6px;font-weight:700}
+.detail p{margin:4px 0;line-height:1.45}
+.reason{padding:9px 12px;border-radius:14px;border:var(--bd)}
+.reason.blocked{background:color-mix(in srgb,var(--out) 10%,transparent)}
+.reason.uncertain{background:color-mix(in srgb,var(--unc) 10%,transparent)}
+.trace{list-style:none;padding:0;margin:0}
+.trace li{display:flex;gap:8px;align-items:flex-start;padding:6px;border-radius:12px;font-size:13px}
+.trace li .dot{flex:0 0 24px}
+.trace li.key{background:color-mix(in srgb,var(--out) 10%,transparent)}
+.muted{color:var(--t2)}
+code{font-family:var(--code-font-family,ui-monospace,monospace);font-size:12px;background:rgba(var(--fgr),.06);padding:1px 6px;border-radius:6px}
+.empty{color:var(--t2);padding:10px 4px}
+.loading{display:flex;gap:12px;align-items:center;justify-content:center;padding:24px;color:var(--t2)}
+.spinner{width:20px;height:20px;border-radius:50%;border:3px solid rgba(var(--fgr),.1);border-top-color:var(--acc);animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+svg .lbl{font-size:12px;fill:var(--fg);opacity:.85}
+svg .tick{font-size:11px;fill:var(--t2)}
+svg .grid{stroke:var(--line);stroke-width:1}
+svg .laneline{stroke:var(--line)}
+svg .laneBg{fill:rgba(var(--fgr),.03)}
+svg .series{fill:none;stroke:var(--acc);stroke-width:1.8}
+svg .thr{stroke:var(--out);stroke-dasharray:5 4;stroke-width:1.2;opacity:.85}
+svg .thrlbl{font-size:11px;fill:var(--out);font-weight:700}
+svg .band{opacity:1}
+svg .bandtxt{font-size:11px;fill:var(--fg);opacity:.8;pointer-events:none}
+svg .restart{fill:rgba(var(--fgr),.10)}
+svg .mk{cursor:pointer;stroke:var(--panel);stroke-width:1.5}
+svg .mk.executed{fill:var(--in)} svg .mk.blocked{fill:var(--out)} svg .mk.uncertain{fill:var(--unc)}
+svg .mk.sel{stroke:var(--fg);stroke-width:2.5}
+svg .ring{fill:none;stroke-width:2} svg .ring.a{stroke:var(--acc2)} svg .ring.b{stroke:#5b8def}
+svg .cursor{stroke:var(--fg);stroke-width:1;stroke-dasharray:3 3;opacity:.5}
+svg .brush{fill:var(--acc);opacity:.15}
 `;
 
 customElements.define("automation-backtest-panel", AutomationBacktestPanel);

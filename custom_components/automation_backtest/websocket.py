@@ -3,6 +3,7 @@
 automation_backtest/config   -> the automation's trigger/condition config as YAML
 automation_backtest/run      -> full backtest (runs + traces + entities + thresholds)
 automation_backtest/compare  -> A vs B, with the runs of both for the chart
+automation_backtest/to_yaml  -> editor config (unsaved draft) -> editable YAML
 YAML is parsed server-side so the panel needs no YAML library.
 """
 
@@ -51,6 +52,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_config)
     websocket_api.async_register_command(hass, ws_run)
     websocket_api.async_register_command(hass, ws_compare)
+    websocket_api.async_register_command(hass, ws_to_yaml)
     hass.data[_REGISTERED] = True
 
 
@@ -169,3 +171,15 @@ async def ws_compare(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
             "thresholds": extract_thresholds(merged),
         },
     )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/to_yaml", vol.Required("config"): vol.Any(dict, None)}
+)
+@websocket_api.require_admin
+@callback
+def ws_to_yaml(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
+    """Turn an editor config (possibly unsaved) into the editable YAML."""
+    config = msg["config"] or {}
+    editable = {k: config[k] for k in _EDITABLE_KEYS if k in config}
+    connection.send_result(msg["id"], {"yaml": dump(editable) if editable else ""})

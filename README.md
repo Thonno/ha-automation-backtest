@@ -31,12 +31,26 @@ After installing, a **Backtest** entry appears in the sidebar (admins only).
 - Click a run on the chart or in the list to see the trigger and the full condition trace,
   with the condition that blocked it highlighted.
 - Tick **Edit YAML** to test a draft without saving it.
+- Choose **＋ New automation (draft)** to write triggers and conditions of an automation you
+  have not created yet and see when it *would have run if it had existed*.
 - The **Compare** tab replays the saved automation (A) and your edit (B) over the same
   period and rings the runs that only happen in one of them.
 
 ![Compare tab](docs/compare.png)
 
 Direct link to an automation: `/automation-backtest?automation=automation.your_automation`.
+
+### "Backtest" in the ⋮ menus
+
+The integration also adds a **Backtest** entry to the ⋮ menu of each automation in
+*Settings → Automations* and to the ⋮ menu of the automation editor. From the editor it
+takes the configuration **as it is on screen, unsaved changes included**, so you can check an
+edit (or a brand-new automation) before saving it.
+
+Home Assistant has no official extension point for these menus, so the entry is added by a
+small script (`automation-backtest-menu.js`). It is written to fail silently: if a future
+Home Assistant release changes those menus, the entry just disappears until it is updated,
+and the sidebar panel keeps working.
 
 ## Install
 
@@ -154,7 +168,6 @@ pytest
 
 ## Roadmap
 
-- "Backtest" entry in the ⋮ menu of the automation editor, opening the panel on that automation
 - `sun` trigger/condition, `zone`, event triggers from the recorder's event table
 - "What-if" overrides: replay with a sensor offset (e.g. lux −20%)
 - Threshold sweep: "for `below` from 15 to 40, how many runs would each value give?"
