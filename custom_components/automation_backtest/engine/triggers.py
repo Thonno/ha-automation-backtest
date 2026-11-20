@@ -21,6 +21,7 @@ from .templates import template_uses_now
 from .util import (
     UnsupportedFeature,
     as_list,
+    describe_bounds,
     norm_state,
     parse_duration,
     parse_time_of_day,
@@ -260,7 +261,7 @@ class NumericStateTrigger(BaseTrigger):
         old = change.old.state if change.old else None
         desc = (
             f"{entity_id}: {old} → {value} "
-            f"(above={self.config.get('above')}, below={self.config.get('below')})"
+            f"({describe_bounds(self.config)})"
         )
         variables = self.variables(
             entity_id=entity_id,

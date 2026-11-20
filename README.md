@@ -13,10 +13,30 @@ Nothing is executed. No lights flip, no notifications go out: actions are never 
 
 ```
 ✅ Tue 10/11 07:42:10  binary_sensor.hallway_motion: off → on
-⛔ Tue 10/11 13:05:44  binary_sensor.hallway_motion: off → on  — blocked by numeric_state: sensor.hallway_lux=412 (above=None, below=30)
+⛔ Tue 10/11 13:05:44  binary_sensor.hallway_motion: off → on  — blocked by numeric_state: sensor.hallway_lux=412 (needs < 30)
 ✅ Tue 10/11 18:31:02  binary_sensor.hallway_motion: off → on
 ❔ Wed 11/11 06:58:00  binary_sensor.hallway_motion: off → on  — uncertain: Condition type 'sun' is not supported yet
 ```
+
+## The panel
+
+After installing, a **Backtest** entry appears in the sidebar (admins only).
+
+![Backtest panel](docs/panel.png)
+
+- Pick an automation and a period (1, 3, 7, 14 days or custom) and press **Run backtest**.
+- The timeline shows every would-be run (✓ executed, ✕ blocked, ◆ uncertain), the
+  entities the automation depends on, the thresholds it uses (dashed lines) and HA restarts
+  (grey bands). Drag on the chart to zoom, double-click to reset.
+- Click a run on the chart or in the list to see the trigger and the full condition trace,
+  with the condition that blocked it highlighted.
+- Tick **Edit YAML** to test a draft without saving it.
+- The **Compare** tab replays the saved automation (A) and your edit (B) over the same
+  period and rings the runs that only happen in one of them.
+
+![Compare tab](docs/compare.png)
+
+Direct link to an automation: `/automation-backtest?automation=automation.your_automation`.
 
 ## Install
 
@@ -27,9 +47,10 @@ Nothing is executed. No lights flip, no notifications go out: actions are never 
 
 **Manual**: copy `custom_components/automation_backtest` into your `config/custom_components/` and restart.
 
-## Use
+## Use from actions
 
-Open *Developer tools → Actions*.
+Everything the panel does is also available as actions, e.g. from *Developer tools → Actions*
+or from scripts.
 
 ### Backtest an existing automation
 
@@ -87,7 +108,7 @@ The response lists executions that happen **only in A** and **only in B**.
 | `warnings` | e.g. entities with no recorded history |
 | `unsupported_triggers` | triggers that cannot be replayed, with the reason |
 
-## What can be simulated (v0.1)
+## What can be simulated
 
 | | Supported | Not yet |
 |---|---|---|
@@ -133,7 +154,7 @@ pytest
 
 ## Roadmap
 
-- Sidebar panel: pick an automation, see the timeline on a chart of the involved entities
+- "Backtest" entry in the ⋮ menu of the automation editor, opening the panel on that automation
 - `sun` trigger/condition, `zone`, event triggers from the recorder's event table
 - "What-if" overrides: replay with a sensor offset (e.g. lux −20%)
 - Threshold sweep: "for `below` from 15 to 40, how many runs would each value give?"

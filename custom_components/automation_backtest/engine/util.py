@@ -85,3 +85,13 @@ def to_float(value: Any) -> float | None:
 def iso(dt: datetime) -> str:
     """ISO string without microseconds."""
     return dt.replace(microsecond=0).isoformat()
+
+
+def describe_bounds(config: dict) -> str:
+    """'> 20 and < 30' style text for numeric_state limits."""
+    parts = []
+    if config.get("above") is not None:
+        parts.append(f"> {config['above']}")
+    if config.get("below") is not None:
+        parts.append(f"< {config['below']}")
+    return " and ".join(parts)

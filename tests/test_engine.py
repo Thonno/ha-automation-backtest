@@ -411,3 +411,21 @@ def test_windows_from_events():
         (ts("2026-11-10 11:32:10"), ts("2026-11-10 11:32:40")),
         (ts("2026-11-11 03:00:00"), ts("2026-11-11 03:01:00")),
     ]
+
+
+def test_extract_thresholds():
+    from engine import extract_thresholds
+
+    config = {
+        "triggers": [
+            {"trigger": "numeric_state", "entity_id": ["sensor.t1", "sensor.t2"], "below": 19.5},
+            {"trigger": "device", "domain": "sensor", "type": "value", "entity_id": "sensor.v", "above": 25},
+            {"trigger": "numeric_state", "entity_id": "sensor.h", "attribute": "x", "above": 1},
+        ],
+        "conditions": [{"condition": "numeric_state", "entity_id": "sensor.lux", "above": "input_number.min"}],
+    }
+    assert extract_thresholds(config) == [
+        {"entity_id": "sensor.t1", "kind": "below", "value": 19.5},
+        {"entity_id": "sensor.t2", "kind": "below", "value": 19.5},
+        {"entity_id": "sensor.v", "kind": "above", "value": 25.0},
+    ]

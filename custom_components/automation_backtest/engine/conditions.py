@@ -16,6 +16,7 @@ from .templates import TemplateRenderer
 from .util import (
     UnsupportedFeature,
     as_list,
+    describe_bounds,
     norm_state,
     parse_duration,
     parse_time_of_day,
@@ -202,7 +203,7 @@ def _numeric_state_condition(cond: dict, ctx: EvalContext):
         ok = numeric_matches(value, cond, ctx)
         details.append(f"{entity_id or 'template'}={raw}")
         if not ok:
-            return False, f"{', '.join(details)} (above={cond.get('above')}, below={cond.get('below')})"
+            return False, f"{', '.join(details)} (needs {describe_bounds(cond)})"
     return True, ", ".join(details)
 
 

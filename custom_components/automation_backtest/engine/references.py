@@ -39,3 +39,47 @@ def extract_entities(config: Any) -> set[str]:
 
     walk(config)
     return found
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def extract_thresholds(config: Any) -> list[dict[str, Any]]:
+    """Numeric limits used by numeric_state / sensor device triggers & conditions.
+
+    Used by the panel to draw threshold lines on the entity charts.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+
+    def visit(node: dict[str, Any]) -> None:
+        kind = node.get("trigger") or node.get("platform") or node.get("condition")
+        numeric = kind == "numeric_state" or (kind == "device" and node.get("domain") == "sensor")
+        if not numeric or node.get("attribute") or node.get("value_template"):
+            return
+        entity_ids = node.get("entity_id")
+        entity_ids = entity_ids if isinstance(entity_ids, list) else [entity_ids]
+        for key in ("above", "below"):
+            if not _is_number(node.get(key)):
+                continue
+            for entity_id in entity_ids:
+                if not isinstance(entity_id, str):
+                    continue
+                item = (entity_id, key, float(node[key]))
+                if item not in seen:
+                    seen.add(item)
+                    out.append({"entity_id": entity_id, "kind": key, "value": float(node[key])})
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            visit(node)
+            for k, v in node.items():
+                if k not in _SKIP_KEYS:
+                    walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(config)
+    return out

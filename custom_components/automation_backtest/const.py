@@ -17,3 +17,8 @@ ATTR_MAX_RUNS = "max_runs"
 DEFAULT_DAYS = 7
 DEFAULT_MAX_RUNS = 200
 MAX_DAYS = 90
+
+PANEL_URL_PATH = "automation-backtest"
+PANEL_COMPONENT = "automation-backtest-panel"
+STATIC_URL = "/automation_backtest_static"
+PANEL_MAX_RUNS = 1500

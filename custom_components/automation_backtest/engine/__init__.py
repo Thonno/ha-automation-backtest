@@ -6,7 +6,7 @@ Home Assistant installed.
 
 from .compare import compare
 from .history import HistoryStore, StateSnapshot
-from .references import extract_entities
+from .references import extract_entities, extract_thresholds
 from .simulator import BLOCKED, EXECUTED, UNCERTAIN, BacktestResult, backtest
 
 __all__ = [
@@ -19,4 +19,5 @@ __all__ = [
     "backtest",
     "compare",
     "extract_entities",
+    "extract_thresholds",
 ]
