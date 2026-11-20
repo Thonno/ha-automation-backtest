@@ -1,0 +1,35 @@
+name: Trigger, condition or action not supported
+description: Something is marked "unsupported", "uncertain" or "not simulated" and you'd like it replayed.
+title: "Support: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks! A YAML example is what makes these quick to add. Remove anything private (names, addresses, tokens).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is not supported?
+      options: [Trigger, Condition, Action]
+    validations:
+      required: true
+  - type: textarea
+    id: yaml
+    attributes:
+      label: YAML of the trigger / condition / action
+      description: Settings → Automations → ⋮ → Edit in YAML, copy just the part that is not supported.
+      render: yaml
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: What the panel shows
+      description: The warning or reason shown in the Backtest panel (a screenshot is fine too).
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Home Assistant 2026.11.2, Automation Backtest 1.2.0"
+    validations:
+      required: true
