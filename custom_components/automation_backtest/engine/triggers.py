@@ -453,7 +453,7 @@ def build_trigger(raw: dict[str, Any], index: int) -> BaseTrigger:
     platform = raw.get("trigger") or raw.get("platform")
     if platform == "device":
         raw = device_trigger_to_state(raw)
-        platform = "state"
+        platform = raw["trigger"]
     cls = _TRIGGERS.get(platform)
     if cls is None:
         raise UnsupportedFeature(

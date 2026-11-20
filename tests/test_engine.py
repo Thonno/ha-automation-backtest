@@ -274,3 +274,44 @@ def test_template_dotted_states_and_trigger_variables(make_history):
         ],
     }
     assert statuses(backtest(config, history, START, END)) == [("08:00", EXECUTED)]
+
+
+# --- humidifier / climate device automations ------------------------------------------
+
+
+def test_humidifier_is_mode_condition_at_midnight(make_history):
+    history = make_history([
+        ("humidifier.camera", "2026-11-09 20:00", "on", {"mode": "auto", "humidity": 50}),
+        ("humidifier.camera", "2026-11-10 12:00", "on", {"mode": "sleep", "humidity": 50}),
+    ])
+    config = {
+        "triggers": [{"trigger": "time", "at": "00:00:00"}],
+        "conditions": [{"condition": "device", "domain": "humidifier", "type": "is_mode",
+                        "device_id": "abc", "entity_id": "humidifier.camera", "mode": "sleep"}],
+    }
+    result = backtest(config, history, ts("2026-11-09 12:00"), ts("2026-11-11 12:00"))
+    # 10/11 00:00 mode=auto -> blocked; 11/11 00:00 mode=sleep -> executed
+    assert statuses(result) == [("00:00", BLOCKED), ("00:00", EXECUTED)]
+    assert "humidifier.camera=auto" in result.runs[0].blocked_by.detail
+
+
+def test_climate_hvac_mode_condition_and_trigger(make_history):
+    history = make_history([
+        ("climate.salotto", "2026-11-09 23:00", "off", {"current_temperature": 18}),
+        ("climate.salotto", "2026-11-10 07:00", "heat", {"current_temperature": 18}),
+    ])
+    trig = {"triggers": [{"trigger": "device", "domain": "climate", "type": "hvac_mode_changed",
+                          "device_id": "x", "entity_id": "climate.salotto", "hvac_mode": "heat"}]}
+    assert statuses(backtest(trig, history, START, END)) == [("07:00", EXECUTED)]
+
+
+def test_humidity_device_trigger_numeric(make_history):
+    history = make_history([
+        ("humidifier.camera", "2026-11-09 23:00", "on", {"current_humidity": 45}),
+        ("humidifier.camera", "2026-11-10 03:00", "on", {"current_humidity": 62}),
+        ("humidifier.camera", "2026-11-10 04:00", "on", {"current_humidity": 65}),
+    ])
+    config = {"triggers": [{"trigger": "device", "domain": "humidifier",
+                            "type": "current_humidity_changed", "device_id": "x",
+                            "entity_id": "humidifier.camera", "above": 60}]}
+    assert statuses(backtest(config, history, START, END)) == [("03:00", EXECUTED)]

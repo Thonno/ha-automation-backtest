@@ -91,8 +91,8 @@ The response lists executions that happen **only in A** and **only in B**.
 
 | | Supported | Not yet |
 |---|---|---|
-| **Triggers** | `state` (from/to/not_from/not_to/attribute/for), `numeric_state` (above/below/attribute/value_template/for, crossing semantics), `time` (fixed times, `input_datetime`), `time_pattern`, `template` (incl. `for`, `now()` re-rendered every minute), `device` triggers that map to a state (turned on/off, motion, open/close, lock…) | `event`, `mqtt`, `webhook`, `sun`, `zone`, `homeassistant`, `calendar`, `tag`, button/remote device triggers, `conversation` |
-| **Conditions** | `state` (incl. `for`, `match: any`, attribute), `numeric_state`, `time` (after/before/weekday, across midnight), `template`, `trigger` (id), `and`/`or`/`not` (incl. shorthand), `device` conditions that map to a state | `sun`, `zone` |
+| **Triggers** | `state` (from/to/not_from/not_to/attribute/for), `numeric_state` (above/below/attribute/value_template/for, crossing semantics), `time` (fixed times, `input_datetime`), `time_pattern`, `template` (incl. `for`, `now()` re-rendered every minute), `device` triggers that map to a state or attribute (turned on/off, motion, open/close, lock, climate HVAC mode, humidity/temperature thresholds…) | `event`, `mqtt`, `webhook`, `sun`, `zone`, `homeassistant`, `calendar`, `tag`, button/remote device triggers, `conversation` |
+| **Conditions** | `state` (incl. `for`, `match: any`, attribute), `numeric_state`, `time` (after/before/weekday, across midnight), `template`, `trigger` (id), `and`/`or`/`not` (incl. shorthand), `device` conditions that map to a state or attribute (on/off, open/closed, humidifier mode, climate HVAC/preset mode…) | `sun`, `zone` |
 | **Templates** | `states()`, `states.domain.object`, `is_state`, `state_attr`, `is_state_attr`, `has_value`, `now()`, `today_at`, `as_timestamp`, `as_datetime`, `float/int/bool` with defaults, `iif`, `trigger.*` | everything else in HA's template API |
 
 **Design rule: never silently wrong.** Anything that cannot be replayed faithfully makes
