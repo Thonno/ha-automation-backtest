@@ -42,6 +42,13 @@ run:
           min: 1
           max: 5000
           mode: box
+    skip_conditions:
+      example: |
+        - condition/0
+        - action/2/if/0
+      selector:
+        text:
+          multiple: true
 
 compare:
   fields:
@@ -71,3 +78,10 @@ compare:
     end:
       selector:
         datetime:
+    skip_conditions:
+      example: |
+        - condition/0
+        - action/2/if/0
+      selector:
+        text:
+          multiple: true

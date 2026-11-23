@@ -32,10 +32,13 @@ from .const import (
     MAX_DAYS,
     SERVICE_BACKTEST,
     SERVICE_COMPARE,
+    ATTR_SKIP_CONDITIONS,
 )
-from .engine import compare
+from .engine import apply_skips, compare
 from .panel import async_register_panel, async_unregister_panel
 from .websocket import async_register_websocket
+
+_SKIP = {vol.Optional(ATTR_SKIP_CONDITIONS): vol.All(cv.ensure_list, [cv.string])}
 
 _PERIOD = {
     vol.Optional(ATTR_START): cv.datetime,
@@ -53,6 +56,7 @@ BACKTEST_SCHEMA = vol.Schema(
         vol.Optional(ATTR_MAX_RUNS, default=DEFAULT_MAX_RUNS): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=5000)
         ),
+        **_SKIP,
         **_PERIOD,
     }
 )
@@ -62,6 +66,7 @@ COMPARE_SCHEMA = vol.Schema(
         vol.Exclusive(ATTR_AUTOMATION, "a"): cv.entity_id,
         vol.Exclusive(ATTR_CONFIG, "a"): dict,
         vol.Required(ATTR_CONFIG_B): dict,
+        **_SKIP,
         **_PERIOD,
     }
 )
@@ -70,23 +75,29 @@ COMPARE_SCHEMA = vol.Schema(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_backtest(call: ServiceCall) -> ServiceResponse:
         config = await runner.automation_config(hass, call.data)
+        config, skipped = apply_skips(config, call.data.get(ATTR_SKIP_CONDITIONS))
         start, end, tz = runner.period(hass, call.data)
         result = await runner.run(hass, config, start, end, tz)
         response = result.as_dict(
             include_runs=call.data[ATTR_INCLUDE_RUNS], max_runs=call.data[ATTR_MAX_RUNS]
         )
         response["timeline"] = runner.timeline(result, call.data[ATTR_MAX_RUNS])
+        response["skipped_conditions"] = skipped
         return response
 
     async def handle_compare(call: ServiceCall) -> ServiceResponse:
         config_a = await runner.automation_config(hass, call.data)
         config_b = runner.resolve_registry_ids(hass, call.data[ATTR_CONFIG_B])
+        skip = call.data.get(ATTR_SKIP_CONDITIONS)
+        config_a, skipped_a = apply_skips(config_a, skip)
+        config_b, skipped_b = apply_skips(config_b, skip)
         start, end, tz = runner.period(hass, call.data)
         result_a = await runner.run(hass, config_a, start, end, tz)
         result_b = await runner.run(hass, config_b, start, end, tz)
         diff = compare(result_a, result_b)
         diff["a"] = result_a.as_dict(include_runs=False)
         diff["b"] = result_b.as_dict(include_runs=False)
+        diff["skipped_conditions"] = sorted(set(skipped_a) | set(skipped_b))
         return diff
 
     hass.services.async_register(

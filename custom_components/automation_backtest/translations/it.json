@@ -42,6 +42,10 @@
         "max_runs": {
           "name": "Massimo esecuzioni",
           "description": "Limita il numero di esecuzioni restituite."
+        },
+        "skip_conditions": {
+          "name": "Salta condizioni",
+          "description": "Percorsi delle condizioni da considerare disabilitate solo in questo backtest (come mostrati nei risultati, es. condition/0 o action/2/if/0). L'automazione non viene modificata."
         }
       }
     },
@@ -72,6 +76,10 @@
         "end": {
           "name": "Fine",
           "description": "Fine della finestra (ora locale). Predefinito: adesso."
+        },
+        "skip_conditions": {
+          "name": "Salta condizioni",
+          "description": "Percorsi delle condizioni da considerare disabilitate in entrambe le versioni, solo per questo confronto."
         }
       }
     }

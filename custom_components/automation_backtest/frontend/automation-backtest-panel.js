@@ -59,6 +59,12 @@ const STR = {
     trigger: "Trigger",
     conditions: "Conditions",
     blockedBy: "Blocked by",
+    skip: "Skip",
+    skipTitle: "Treat this condition as disabled in this backtest only. The automation is not changed.",
+    skippedHead: "Skipped in this backtest",
+    skipMissing: "not found",
+    restore: "Restore",
+    restoreAll: "Restore all",
     uncertainBecause: "Uncertain because",
     centre: "Zoom here",
     resetZoom: "Reset zoom",
@@ -150,6 +156,12 @@ const STR = {
     trigger: "Trigger",
     conditions: "Condizioni",
     blockedBy: "Bloccata da",
+    skip: "Salta",
+    skipTitle: "Considera questa condizione disabilitata solo in questo backtest. L'automazione non viene modificata.",
+    skippedHead: "Saltate in questo backtest",
+    skipMissing: "non trovata",
+    restore: "Ripristina",
+    restoreAll: "Ripristina tutte",
     uncertainBecause: "Incerta perché",
     centre: "Zoom qui",
     resetZoom: "Annulla zoom",
@@ -274,6 +286,7 @@ class AutomationBacktestPanel extends HTMLElement {
       statusFilter: null,
       listLimit: LIST_PAGE,
       actView: "both", // real | sim | both (controlled-entity lanes)
+      skips: [], // [{path, label}] conditions disabled for the backtest only
     };
     this._drag = null;
   }
@@ -431,6 +444,7 @@ class AutomationBacktestPanel extends HTMLElement {
     Object.assign(s, {
       tab: "run", result: null, cmp: null, selected: -1, view: null, error: "",
       saved: null, editing: false, draft: null, yaml: "", dirty: false, fromEditor: false, statusFilter: null,
+      skips: [],
     });
     if (params.get("draft")) {
       this._loadDraft(known);
@@ -568,6 +582,7 @@ class AutomationBacktestPanel extends HTMLElement {
     const t = this._t;
     let html = this._draftEditor(false);
     const r = s.result;
+    html += this._skipsBar(r?.skipped_conditions);
     if (!r) return html;
     html += this._summary(r);
     html += this._notices(r);
@@ -653,10 +668,11 @@ ${this._chartBar()}
       ? run.conditions
           .map((c) => {
             const depth = c.path.split("/").length - 2;
-            const st = c.result === true ? "executed" : c.result === false ? "blocked" : "uncertain";
+            const st = c.skipped ? "skipped" : c.result === true ? "executed" : c.result === false ? "blocked" : "uncertain";
             return `<li class="${c.path === key ? "key" : ""}" style="margin-left:${Math.max(0, depth) * 14}px">
-              <span class="dot ${st}">${ICON[st]}</span>
-              <code>${esc(c.condition)}</code> <span class="muted">${esc(c.detail)}</span></li>`;
+              <span class="dot ${st}">${c.skipped ? STEP_ICON.skipped : ICON[st]}</span>
+              <span><code>${esc(c.condition)}</code> <span class="muted">${esc(c.detail)}</span></span>
+              ${c.result !== true && !c.skipped ? this._skipBtn(c.path, c.condition) : ""}</li>`;
           })
           .join("")
       : `<li class="muted">${esc(t.noConditions)}</li>`;
@@ -674,6 +690,28 @@ ${this._chartBar()}
       ${this._actionsHtml(run, r)}`;
   }
 
+  _skipBtn(path, label) {
+    const t = this._t;
+    return `<button class="flat skip" data-skip="${esc(path)}" data-label="${esc(label)}" title="${esc(t.skipTitle)}">${esc(t.skip)}</button>`;
+  }
+
+  // Conditions disabled for this backtest only, with a way back.
+  _skipsBar(applied) {
+    const s = this._s;
+    const t = this._t;
+    if (!s.skips.length) return "";
+    const items = s.skips
+      .map((k) => {
+        const missing = applied && !applied.includes(k.path);
+        return `<span class="skip-item${missing ? " missing" : ""}"><code>${esc(k.label)}</code>
+          <span class="muted">${esc(k.path)}${missing ? ` · ${esc(t.skipMissing)}` : ""}</span>
+          <button class="flat" data-unskip="${esc(k.path)}">${esc(t.restore)}</button></span>`;
+      })
+      .join("");
+    const all = s.skips.length > 1 ? `<button class="flat" data-unskip="*">${esc(t.restoreAll)}</button>` : "";
+    return `<div class="card skips"><b>${esc(t.skippedHead)}</b>${items}${all}</div>`;
+  }
+
   _actionsHtml(run, r) {
     const t = this._t;
     if (!run.actions?.length && !run.action_note) {
@@ -689,7 +727,8 @@ ${this._chartBar()}
         const off = dt > 0 ? `+${dt >= 3600 ? `${Math.floor(dt / 3600)}h${String(Math.floor((dt % 3600) / 60)).padStart(2, "0")}` : dt >= 60 ? `${Math.floor(dt / 60)}m${dt % 60 ? String(dt % 60).padStart(2, "0") + "s" : ""}` : `${dt}s`}` : "";
         return `<li style="margin-left:${depth * 14}px" title="${esc(t.stepResult[st.result] || st.result)}">
           <span class="dot ${cls[st.result] || "uncertain"}">${STEP_ICON[st.result] || "?"}</span>
-          <span><code>${esc(st.label)}</code>${off ? ` <span class="off">${esc(off)}</span>` : ""} <span class="muted">${esc(st.detail)}</span></span></li>`;
+          <span><code>${esc(st.label)}</code>${off ? ` <span class="off">${esc(off)}</span>` : ""} <span class="muted">${esc(st.detail)}</span></span>
+          ${st.skip ? this._skipBtn(st.skip, st.label) : ""}</li>`;
       })
       .join("");
     const note = run.action_note ? `<p class="reason uncertain">${esc(t.actionNote[run.action_note] || run.action_note)}</p>` : "";
@@ -706,6 +745,7 @@ ${this._chartBar()}
       ${this._draftEditor(true)}
     </div>`;
     const c = s.cmp;
+    html += this._skipsBar(c?.skipped_conditions);
     if (!c) return html;
     const d = c.diff.summary;
     html += `<div class="chips">
@@ -1155,6 +1195,12 @@ ${this._chartBar()}
       this._renderAll();
     } else if (el.classList.contains("go")) {
       s.tab === "run" ? this._runBacktest() : this._runCompare();
+    } else if (el.dataset.skip) {
+      if (!s.skips.some((k) => k.path === el.dataset.skip)) s.skips.push({ path: el.dataset.skip, label: el.dataset.label || "" });
+      s.tab === "run" ? this._runBacktest() : this._runCompare();
+    } else if (el.dataset.unskip) {
+      s.skips = el.dataset.unskip === "*" ? [] : s.skips.filter((k) => k.path !== el.dataset.unskip);
+      s.tab === "run" ? this._runBacktest() : this._runCompare();
     } else if (el.dataset.filter) {
       s.statusFilter = s.statusFilter === el.dataset.filter ? null : el.dataset.filter;
       s.listLimit = LIST_PAGE;
@@ -1215,6 +1261,7 @@ ${this._chartBar()}
     const el = e.target;
     if (el.classList.contains("auto")) {
       s.automation = el.value;
+      s.skips = [];
       s.result = null;
       s.cmp = null;
       s.selected = -1;
@@ -1282,6 +1329,7 @@ ${this._chartBar()}
       config = null;
     }
     s.automation = automation || NEW;
+    s.skips = [];
     this._renderAll();
     try {
       if (automation) await this._loadSaved();
@@ -1648,6 +1696,7 @@ ${this._chartBar()}
         Object.assign(msg, this._draftPayload("config", "config_yaml"));
         if (s.automation !== NEW) msg.actions_from = s.automation;
       } else msg.automation = s.automation;
+      if (s.skips.length) msg.skip_conditions = s.skips.map((k) => k.path);
       const result = await this._ws(msg);
       const controlled = (result.controlled || []).slice(0, MAX_CONTROLLED_LANES);
       s.history = await this._loadHistory(
@@ -1682,6 +1731,7 @@ ${this._chartBar()}
         automation: s.automation,
         ...this._draftPayload("config_b", "config_b_yaml"),
         ...this._periodMsg(),
+        ...(s.skips.length ? { skip_conditions: s.skips.map((k) => k.path) } : {}),
       });
       s.history = await this._loadHistory(cmp.entities, cmp.a.period);
       s.cmp = cmp;
@@ -1826,6 +1876,11 @@ td.desc{word-break:break-word}
 .reason{padding:9px 12px;border-radius:14px;border:var(--bd)}
 .reason.blocked{background:color-mix(in srgb,var(--out) 10%,transparent)}
 .reason.uncertain{background:color-mix(in srgb,var(--unc) 10%,transparent)}
+.dot.skipped{background:var(--tile);color:var(--t2)}
+.trace li button.skip{margin-left:auto;padding:2px 8px;font-size:12px;flex:none}
+.card.skips{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-bottom:14px}
+.skip-item{display:inline-flex;align-items:center;gap:6px}
+.skip-item.missing code{text-decoration:line-through;opacity:.6}
 .trace{list-style:none;padding:0;margin:0}
 .trace li{display:flex;gap:8px;align-items:flex-start;padding:6px;border-radius:12px;font-size:13px}
 .trace li .dot{flex:0 0 24px}

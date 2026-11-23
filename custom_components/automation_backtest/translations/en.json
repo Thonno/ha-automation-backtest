@@ -42,6 +42,10 @@
         "max_runs": {
           "name": "Max runs",
           "description": "Limit the number of runs returned."
+        },
+        "skip_conditions": {
+          "name": "Skip conditions",
+          "description": "Condition paths to treat as disabled for this backtest only (as shown in the results, e.g. condition/0 or action/2/if/0). The automation is not changed."
         }
       }
     },
@@ -72,6 +76,10 @@
         "end": {
           "name": "End",
           "description": "End of the window (local time). Defaults to now."
+        },
+        "skip_conditions": {
+          "name": "Skip conditions",
+          "description": "Condition paths to treat as disabled in both versions for this comparison only."
         }
       }
     }

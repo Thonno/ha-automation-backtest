@@ -71,6 +71,7 @@ You write or tweak an automation and then wait a week to find out whether it wor
 
 - **Sidebar panel** (admins only) with a timeline of every would-be run (✓ executed, ✕ blocked, ◆ uncertain), the entities the automation depends on, the thresholds it uses as dashed lines, and Home Assistant restarts as grey bands. Drag to zoom, double-click to reset.
 - **Full condition trace** for each run, with the blocking condition highlighted.
+- **Skip a condition**: *Skip* next to a failing condition (top-level or inside the actions: `condition`, `if`, `choose`, `repeat while/until`) re-runs the backtest as if it were disabled. Handy when a device was unavailable in the history. The automation is not changed; *Restore* brings it back.
 - **What it would have done**: the actions are dry-run for every executed run (service calls, delays, `choose`/`if`, `repeat`, `variables`, `stop`), and the entities they control get their own lanes, **Real**, **Simulated** or **Both**. Simulated is the state each entity would have had if only this automation had driven it, with `mode: single / restart / queued` taken into account. Check an automation in seconds instead of waiting a week.
 - **Drafts with Home Assistant's own editor**: tick *Try a change* to edit triggers, conditions and actions with the same visual blocks (entity pickers, durations, states) as the real automation editor, or in YAML. Nothing is saved.
 - **New automations**: *＋ New automation (draft)* lets you build and backtest something that doesn't exist yet, actions included.
@@ -179,7 +180,17 @@ data:
         before: "09:00"
 ```
 
-The response contains `summary` (triggered / executed / blocked / uncertain), a human-readable `timeline`, the `runs` with the full condition trace and `blocked_by`, `warnings`, `unsupported_triggers` and the `restarts` it found. `compare` adds `only_a`, `only_b` and `shifted`.
+```yaml
+# Same backtest, as if two conditions were disabled (paths as shown in the runs)
+action: automation_backtest.run
+data:
+  automation: automation.hallway_lights
+  skip_conditions:
+    - condition/0
+    - action/2/if/0
+```
+
+The response contains `summary` (triggered / executed / blocked / uncertain), a human-readable `timeline`, the `runs` with the full condition trace and `blocked_by`, `warnings`, `unsupported_triggers` and the `restarts` it found. `compare` adds `only_a`, `only_b` and `shifted`. With `skip_conditions`, `skipped_conditions` lists the paths that were found and disabled.
 
 ## How it works
 

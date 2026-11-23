@@ -12,6 +12,7 @@ from typing import Any
 
 from .devices import device_condition_to_state
 from .history import SimulatedStates
+from .skips import SKIP_MARK
 from .templates import TemplateRenderer
 from .util import (
     UnsupportedFeature,
@@ -42,14 +43,28 @@ class ConditionTrace:
     condition: str
     result: bool | None
     detail: str = ""
+    skipped: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "path": self.path,
             "condition": self.condition,
             "result": self.result,
             "detail": self.detail,
         }
+        if self.skipped:
+            out["skipped"] = True
+        return out
+
+
+def is_disabled(raw: Any) -> bool:
+    """``enabled: false`` (also written as a string, as YAML from the UI may carry it)."""
+    if not isinstance(raw, dict) or "enabled" not in raw:
+        return False
+    value = raw["enabled"]
+    if isinstance(value, str):
+        return value.strip().lower() in ("false", "off", "no", "0")
+    return value is False or value == 0
 
 
 def normalize_condition(raw: Any) -> dict[str, Any]:
@@ -62,7 +77,10 @@ def normalize_condition(raw: Any) -> dict[str, Any]:
         return raw
     for key in ("and", "or", "not"):
         if key in raw:
-            return {"condition": key, "conditions": raw[key]}
+            out = {"condition": key, "conditions": raw[key]}
+            if "enabled" in raw:
+                out["enabled"] = raw["enabled"]
+            return out
     raise UnsupportedFeature(f"Unrecognized condition: {raw!r}")
 
 
@@ -88,8 +106,10 @@ def evaluate(raw: Any, ctx: EvalContext, path: str) -> tuple[bool | None, list[C
     except UnsupportedFeature as err:
         return None, [ConditionTrace(path, "?", None, str(err))]
 
-    if cond.get("enabled") is False:
-        return True, [ConditionTrace(path, cond["condition"], True, "disabled, skipped")]
+    if is_disabled(cond):
+        # Neutral, like HA: passes an and/top-level list, ignored by or/not (see _logical).
+        detail = "skipped in this backtest" if cond.get(SKIP_MARK) else "disabled, skipped"
+        return True, [ConditionTrace(path, cond["condition"], True, detail, skipped=True)]
 
     kind = cond["condition"]
     try:
@@ -114,6 +134,8 @@ def _logical(kind: str, cond: dict, ctx: EvalContext, path: str):
     for idx, sub in enumerate(as_list(cond.get("conditions"))):
         res, sub_traces = evaluate(sub, ctx, f"{path}/conditions/{idx}")
         traces.extend(sub_traces)
+        if sub_traces and sub_traces[0].skipped:
+            continue  # disabled: HA leaves it out of and/or/not
         results.append(res)
         if kind == "and" and res is False:
             break

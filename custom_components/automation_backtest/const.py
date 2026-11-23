@@ -13,6 +13,7 @@ ATTR_END = "end"
 ATTR_DAYS = "days"
 ATTR_INCLUDE_RUNS = "include_runs"
 ATTR_MAX_RUNS = "max_runs"
+ATTR_SKIP_CONDITIONS = "skip_conditions"
 
 DEFAULT_DAYS = 7
 DEFAULT_MAX_RUNS = 200

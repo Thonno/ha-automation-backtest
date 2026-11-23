@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-23
+
+### Added
+- **Skip a condition for one backtest** ([#3](https://github.com/Thonno/ha-automation-backtest/issues/3), requested by @Aaroneisele55): a *Skip* button next to every failing condition in the run details, also inside the actions (`condition` steps, `if`, `choose`, `repeat while/until`). The backtest re-runs as if that condition were disabled, without touching the automation. Skipped conditions are listed above the results with *Restore* / *Restore all*, and they apply to *Compare* too (both versions).
+- `skip_conditions` option for the `run` and `compare` actions (and websocket commands): a list of condition paths such as `condition/0` or `action/2/if/0`. The response includes `skipped_conditions`.
+
+### Changed
+- Action step paths now follow the configuration (`…/choose/0/sequence/1`, `…/repeat/sequence/0`, `…/parallel/0/sequence/0`).
+
+### Fixed
+- A disabled condition (`enabled: false`) inside `or` or `not` is now ignored, as in Home Assistant. Before it counted as passed, so an `or` with a disabled branch always passed.
+- `enabled: false` on `and`/`or`/`not` shorthand conditions is no longer lost.
+
 ## [1.2.1] - 2026-11-20
 
 ### Added
@@ -71,7 +84,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Restarts modelled: no runs while Home Assistant was down, pending `for:` timers dropped.
 - Actions `automation_backtest.run` and `automation_backtest.compare`.
 
-[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.0.2...v1.1.0

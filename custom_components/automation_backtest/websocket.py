@@ -32,7 +32,7 @@ from .const import (
     MAX_DAYS,
     PANEL_MAX_RUNS,
 )
-from .engine import compare, extract_entities, extract_thresholds
+from .engine import apply_skips, compare, extract_entities, extract_thresholds
 
 _REGISTERED = f"{DOMAIN}_ws_registered"
 _EDITABLE_KEYS = ("triggers", "trigger", "conditions", "condition", "actions", "action")
@@ -158,6 +158,7 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
         vol.Exclusive("config_yaml", "source"): str,
         vol.Exclusive("config", "source"): dict,
         vol.Optional("actions_from"): str,
+        vol.Optional("skip_conditions"): [str],
         **_PERIOD,
     }
 )
@@ -166,12 +167,15 @@ async def ws_config(hass: HomeAssistant, connection, msg: dict[str, Any]) -> Non
 async def ws_run(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
     try:
         config = await _source_config(hass, msg, "config_yaml")
+        config, skipped = apply_skips(config, msg.get("skip_conditions"))
         start, end, tz = runner.period(hass, _period_data(msg))
         result = await runner.run(hass, config, start, end, tz)
     except HomeAssistantError as err:
         _error(connection, msg["id"], err)
         return
-    connection.send_result(msg["id"], _full_result(result, config))
+    out = _full_result(result, config)
+    out["skipped_conditions"] = skipped
+    connection.send_result(msg["id"], out)
 
 
 @websocket_api.websocket_command(
@@ -182,6 +186,7 @@ async def ws_run(hass: HomeAssistant, connection, msg: dict[str, Any]) -> None:
         vol.Exclusive("config_b_yaml", "b"): str,
         vol.Exclusive("config_b", "b"): dict,
         vol.Optional("actions_from"): str,
+        vol.Optional("skip_conditions"): [str],
         **_PERIOD,
     }
 )
@@ -193,6 +198,8 @@ async def ws_compare(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
         if not msg.get("config_b") and not msg.get("config_b_yaml"):
             raise HomeAssistantError("Version B is missing")
         config_b = await _source_config(hass, msg, "config_b_yaml", "config_b")
+        config_a, skipped_a = apply_skips(config_a, msg.get("skip_conditions"))
+        config_b, skipped_b = apply_skips(config_b, msg.get("skip_conditions"))
         start, end, tz = runner.period(hass, _period_data(msg))
         result_a = await runner.run(hass, config_a, start, end, tz)
         result_b = await runner.run(hass, config_b, start, end, tz)
@@ -208,6 +215,7 @@ async def ws_compare(hass: HomeAssistant, connection, msg: dict[str, Any]) -> No
             "b": _full_result(result_b, config_b),
             "entities": sorted(extract_entities(merged)),
             "thresholds": extract_thresholds(merged),
+            "skipped_conditions": sorted(set(skipped_a) | set(skipped_b)),
         },
     )
 

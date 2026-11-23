@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .conditions import EvalContext, evaluate_conditions
+from .conditions import EvalContext, evaluate_conditions, is_disabled
+from .skips import SKIP_MARK
 from .history import HistoryStore, StateSnapshot
 from .references import _ENTITY_RE
 from .templates import TemplateRenderer
@@ -101,9 +102,10 @@ class Step:
     result: str
     detail: str = ""
     entities: list[str] = field(default_factory=list)
+    skip: str | None = None  # path of the condition that decided this step, for "skip it"
 
     def as_dict(self, tz) -> dict[str, Any]:
-        return {
+        out = {
             "time": iso(self.time.astimezone(tz)),
             "path": self.path,
             "kind": self.kind,
@@ -112,6 +114,9 @@ class Step:
             "detail": self.detail,
             "entities": list(self.entities),
         }
+        if self.skip:
+            out["skip"] = self.skip
+        return out
 
 
 class _Stop(Exception):
@@ -290,10 +295,13 @@ class ActionSimulator:
                 return
             self._step(raw, rs, f"{path}/{idx}")
 
-    def _conditions(self, conds: Any, rs: _RunState) -> tuple[bool | None, str]:
-        passed, traces = evaluate_conditions(as_list(conds), self._ctx(rs))
+    def _conditions(self, conds: Any, rs: _RunState, path: str) -> tuple[bool | None, str, str | None]:
+        """Evaluate a condition list; also return the path of the top condition that failed."""
+        passed, traces = evaluate_conditions(as_list(conds), self._ctx(rs), path)
         failing = next((t for t in traces if t.result is not True), None)
-        return passed, (f"{failing.condition}: {failing.detail}" if failing else "")
+        if failing is None:
+            return passed, "", None
+        return passed, f"{failing.condition}: {failing.detail}", failing.path
 
     def _step(self, raw: Any, rs: _RunState, path: str) -> None:
         if isinstance(raw, str):  # template shorthand = condition
@@ -302,8 +310,9 @@ class ActionSimulator:
             self._add(rs, path, "?", str(raw), NOT_SIMULATED, "invalid action")
             return
         alias = raw.get("alias")
-        if raw.get("enabled") is False:
-            self._add(rs, path, "disabled", alias or _short(raw), SKIPPED, "disabled")
+        if is_disabled(raw):
+            why = "skipped in this backtest" if raw.get(SKIP_MARK) else "disabled"
+            self._add(rs, path, "disabled", alias or _short(raw), SKIPPED, why)
             return
 
         service = _service_name(raw)
@@ -326,32 +335,33 @@ class ActionSimulator:
             self._add(rs, path, kind, alias or kind, NOT_SIMULATED, "waits are not simulated: the rest of this run is not shown")
             raise _Stop
         elif "condition" in raw:
-            passed, why = self._conditions([raw], rs)
+            passed, why, failed = self._conditions([raw], rs, path)
             if passed is True:
                 self._add(rs, path, "condition", alias or f"condition {raw['condition']}", DONE, "passed")
             else:
                 self._add(rs, path, "condition", alias or f"condition {raw['condition']}",
-                          STOPPED if passed is False else NOT_SIMULATED, why or "not passed")
+                          STOPPED if passed is False else NOT_SIMULATED, why or "not passed", skip=failed)
                 raise _Stop
         elif "if" in raw:
-            passed, why = self._conditions(raw["if"], rs)
+            passed, why, failed = self._conditions(raw["if"], rs, f"{path}/if")
             if passed is None:
-                self._add(rs, path, "if", alias or "if", NOT_SIMULATED, why)
+                self._add(rs, path, "if", alias or "if", NOT_SIMULATED, why, skip=failed)
                 raise _Stop
             branch = "then" if passed else "else"
-            self._add(rs, path, "if", alias or "if", DONE, f"→ {branch}" + ("" if passed else f" ({why})"))
+            self._add(rs, path, "if", alias or "if", DONE, f"→ {branch}" + ("" if passed else f" ({why})"),
+                      skip=None if passed else failed)
             self._sequence(as_list(raw.get(branch)), rs, f"{path}/{branch}")
         elif "choose" in raw:
             for opt_idx, option in enumerate(as_list(raw["choose"])):
                 if not isinstance(option, dict):
                     continue
-                passed, why = self._conditions(option.get("conditions"), rs)
+                passed, why, failed = self._conditions(option.get("conditions"), rs, f"{path}/choose/{opt_idx}/conditions")
                 if passed is None:
-                    self._add(rs, path, "choose", alias or "choose", NOT_SIMULATED, f"option {opt_idx + 1}: {why}")
+                    self._add(rs, path, "choose", alias or "choose", NOT_SIMULATED, f"option {opt_idx + 1}: {why}", skip=failed)
                     raise _Stop
                 if passed:
                     self._add(rs, path, "choose", alias or "choose", DONE, f"→ option {opt_idx + 1}" + (f" ({option['alias']})" if option.get("alias") else ""))
-                    self._sequence(as_list(option.get("sequence")), rs, f"{path}/choose/{opt_idx}")
+                    self._sequence(as_list(option.get("sequence")), rs, f"{path}/choose/{opt_idx}/sequence")
                     return
             if "default" in raw:
                 self._add(rs, path, "choose", alias or "choose", DONE, "→ default")
@@ -364,9 +374,13 @@ class ActionSimulator:
             start, latest = rs.now, rs.now
             for b_idx, branch in enumerate(as_list(raw["parallel"])):
                 rs.now = start
-                steps = as_list(branch.get("sequence")) if isinstance(branch, dict) and "sequence" in branch else [branch]
+                b_path = f"{path}/parallel/{b_idx}"
+                if isinstance(branch, dict) and "sequence" in branch:
+                    steps, b_path = as_list(branch.get("sequence")), f"{b_path}/sequence"
+                else:
+                    steps = [branch]
                 try:
-                    self._sequence(steps, rs, f"{path}/parallel/{b_idx}")
+                    self._sequence(steps, rs, b_path)
                 except _Stop:
                     pass
                 latest = max(latest, rs.now)
@@ -405,7 +419,7 @@ class ActionSimulator:
             self._add(rs, path, "repeat", alias or f"repeat ×{count}", DONE)
             for i in range(min(count, MAX_REPEAT)):
                 rs.variables["repeat"] = {"index": i + 1, "first": i == 0, "last": i == count - 1}
-                self._sequence(seq, rs, f"{path}/repeat")
+                self._sequence(seq, rs, f"{path}/repeat/sequence")
         elif "for_each" in rep:
             items = self._render(rep["for_each"], rs)
             items = items if isinstance(items, list) else None
@@ -415,24 +429,24 @@ class ActionSimulator:
             self._add(rs, path, "repeat", alias or f"repeat ×{len(items)}", DONE)
             for i, item in enumerate(items[:MAX_REPEAT]):
                 rs.variables["repeat"] = {"index": i + 1, "first": i == 0, "last": i == len(items) - 1, "item": item}
-                self._sequence(seq, rs, f"{path}/repeat")
+                self._sequence(seq, rs, f"{path}/repeat/sequence")
         else:
             key = "while" if "while" in rep else "until"
             self._add(rs, path, "repeat", alias or f"repeat {key}", DONE)
             for i in range(MAX_REPEAT):
                 rs.variables["repeat"] = {"index": i + 1, "first": i == 0}
                 if key == "while":
-                    passed, why = self._conditions(rep["while"], rs)
+                    passed, why, failed = self._conditions(rep["while"], rs, f"{path}/repeat/while")
                     if passed is None:
-                        self._add(rs, path, "repeat", "while", NOT_SIMULATED, why)
+                        self._add(rs, path, "repeat", "while", NOT_SIMULATED, why, skip=failed)
                         raise _Stop
                     if not passed:
                         return
-                self._sequence(seq, rs, f"{path}/repeat")
+                self._sequence(seq, rs, f"{path}/repeat/sequence")
                 if key == "until":
-                    passed, why = self._conditions(rep["until"], rs)
+                    passed, why, failed = self._conditions(rep["until"], rs, f"{path}/repeat/until")
                     if passed is None:
-                        self._add(rs, path, "repeat", "until", NOT_SIMULATED, why)
+                        self._add(rs, path, "repeat", "until", NOT_SIMULATED, why, skip=failed)
                         raise _Stop
                     if passed:
                         return
