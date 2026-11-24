@@ -213,6 +213,30 @@ conditions: []
 actions: []
 `;
 const EMPTY = () => ({ triggers: [], conditions: [], actions: [] });
+
+// HA's editor blocks, used here without its sidebar, render each row in an
+// ha-expansion-panel whose header cannot shrink: a long entity chip pushes the
+// row's ⋮ menu out of the card on narrow screens (GitHub #4).
+let rowFixSheet = null;
+function fixRowHeaders(root, depth = 0) {
+  if (!root || depth > 30) return;
+  try {
+    if (!rowFixSheet) {
+      rowFixSheet = new CSSStyleSheet();
+      rowFixSheet.replaceSync('::slotted([slot="header"]){min-width:0}');
+    }
+    for (const el of root.querySelectorAll("*")) {
+      const sr = el.shadowRoot;
+      if (!sr) continue;
+      if (el.tagName === "HA-EXPANSION-PANEL" && !sr.adoptedStyleSheets.includes(rowFixSheet)) {
+        sr.adoptedStyleSheets = [...sr.adoptedStyleSheets, rowFixSheet];
+      }
+      fixRowHeaders(sr, depth + 1);
+    }
+  } catch (_e) {
+    /* cosmetic only */
+  }
+}
 const LOGO = `<svg viewBox="16 16 224 224" class="logo-ic" aria-hidden="true"><defs><linearGradient id="abt-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f7ad4c"/><stop offset="1" stop-color="#e5762e"/></linearGradient></defs><rect x="16" y="16" width="224" height="224" rx="48" fill="url(#abt-g)"/><path d="M 75.6 91.3 A 64 64 0 1 1 66.2 144.6" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round"/><path d="M 60 114 L 97 98 L 62 72 Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/><rect x="98" y="132" width="14" height="30" rx="5" fill="#fff" opacity=".85"/><rect x="121" y="112" width="14" height="50" rx="5" fill="#fff" opacity=".85"/><rect x="144" y="96" width="14" height="66" rx="5" fill="#fff" opacity=".85"/><circle cx="176" cy="88" r="11" fill="#8a4513" stroke="#fff" stroke-width="5"/></svg>`;
 const MENU_PATH = "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z";
 const ICON = { executed: "✓", blocked: "✕", uncertain: "?" };
@@ -1591,7 +1615,13 @@ ${this._chartBar()}
       this._markDirty();
     });
     wrap.append(h1, tr, h2, co, h3, ac);
-    this._vis = { wrap, tr, co, ac };
+    // New, expanded or re-rendered rows: fix their headers once they have rendered.
+    const refix = () => {
+      clearTimeout(this._rowFixTimer);
+      this._rowFixTimer = setTimeout(() => fixRowHeaders(wrap), 150);
+    };
+    for (const type of ["value-changed", "expanded-changed", "click"]) wrap.addEventListener(type, refix, true);
+    this._vis = { wrap, tr, co, ac, refix };
     return this._vis;
   }
 
@@ -1643,6 +1673,9 @@ ${this._chartBar()}
       if (vis.ac.actions !== (draft.actions || [])) vis.ac.actions = draft.actions || [];
       const current = this.shadowRoot.querySelector(".ve-slot");
       if (current) current.replaceChildren(vis.wrap);
+      fixRowHeaders(vis.wrap);
+      vis.refix();
+      setTimeout(() => fixRowHeaders(vis.wrap), 1500); // chips and nested blocks render late
     } else {
       const code = this._buildCode();
       code.value = s.yaml;

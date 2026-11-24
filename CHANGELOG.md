@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-24
+
+### Fixed
+- Draft editor on narrow screens: a trigger, condition or action whose header shows a long entity name pushed its ⋮ menu (and the drag handle) out of the card, so the menu could not be opened ([#4](https://github.com/Thonno/ha-automation-backtest/issues/4), reported by @Aaroneisele55). Long names are now shortened with an ellipsis, as in Home Assistant's own editor.
+
 ## [1.3.0] - 2026-11-23
 
 ### Added
@@ -84,7 +89,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Restarts modelled: no runs while Home Assistant was down, pending `for:` timers dropped.
 - Actions `automation_backtest.run` and `automation_backtest.compare`.
 
-[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/Thonno/ha-automation-backtest/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/Thonno/ha-automation-backtest/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/Thonno/ha-automation-backtest/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Thonno/ha-automation-backtest/compare/v1.1.0...v1.2.0
